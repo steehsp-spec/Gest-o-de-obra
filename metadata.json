@@ -1,0 +1,7 @@
+{
+  "name": "Remix: ConstrutoraPro Gestão de Obras",
+  "description": "Sistema de gestão de obras para pequenas empresas da construção civil, permitindo o controle de até 4 obras simultâneas com cronograma, financeiro e acompanhamento diário.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

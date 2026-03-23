@@ -1,0 +1,105 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "engineer", "foreman", "finance", "client"] }
+      },
+      "required": ["uid", "email", "name", "role"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Construction project",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "client": { "type": "string" },
+        "address": { "type": "string" },
+        "startDate": { "type": "string", "format": "date" },
+        "endDate": { "type": "string", "format": "date" },
+        "managerId": { "type": "string" },
+        "budget": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "completed", "delayed", "on-hold"] }
+      },
+      "required": ["name", "code", "client", "address", "startDate", "endDate", "managerId", "budget", "status"]
+    },
+    "ProjectTemplate": {
+      "title": "ProjectTemplate",
+      "description": "Template for project schedule structure",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["obra_completa", "obra_parcial", "manutencao", "em_branco"] },
+        "structure": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "type", "structure"]
+    },
+    "Pendency": {
+      "title": "Pendency",
+      "description": "Issue or pendency linked to a project or schedule item",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "projectId": { "type": "string" },
+        "stage": { "type": "string" },
+        "scheduleItemId": { "type": "string" },
+        "origin": { "type": "string", "enum": ["cronograma", "outro"] },
+        "responsibleId": { "type": "string" },
+        "priority": { "type": "string", "enum": ["baixa", "media", "alta", "critica"] },
+        "deadline": { "type": "string", "format": "date" },
+        "status": { "type": "string", "enum": ["aberta", "em_andamento", "resolvida", "cancelada"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "projectId", "responsibleId", "priority", "deadline", "status", "createdAt"]
+    },
+    "ScheduleItem": {
+      "title": "ScheduleItem",
+      "description": "Item in the project schedule",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string" },
+        "title": { "type": "string" },
+        "responsibleId": { "type": "string" },
+        "startDate": { "type": "string", "format": "date" },
+        "endDate": { "type": "string", "format": "date" },
+        "status": { "type": "string", "enum": ["pendente", "em_andamento", "concluido", "atrasado"] },
+        "progress": { "type": "number" },
+        "weight": { "type": "number" },
+        "realWeight": { "type": "number" },
+        "complexity": { "type": "string", "enum": ["baixa", "media", "alta"] },
+        "parentStepId": { "type": "string" }
+      },
+      "required": ["projectId", "title", "responsibleId", "startDate", "endDate", "status", "progress", "weight"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "User profiles"
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "Project" },
+      "description": "Construction projects"
+    },
+    "/projectTemplates/{templateId}": {
+      "schema": { "$ref": "ProjectTemplate" },
+      "description": "Customizable project templates"
+    },
+    "/pendencies/{pendencyId}": {
+      "schema": { "$ref": "Pendency" },
+      "description": "Project pendencies"
+    },
+    "/scheduleItems/{scheduleItemId}": {
+      "schema": { "$ref": "ScheduleItem" },
+      "description": "Project schedule items"
+    }
+  }
+}
