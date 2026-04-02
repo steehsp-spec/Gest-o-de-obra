@@ -33,58 +33,39 @@ export default function Header() {
     .substring(0, 2);
 
   return (
-    <header className="h-16 bg-[#161B22] border-b border-white/10 flex items-center justify-between px-8 fixed top-0 left-64 right-0 z-20">
-      <div className="flex items-center gap-4">
-        <h2 className="text-lg font-semibold text-white">{settings.companyName}</h2>
+    <header className="h-16 bg-[#161B22] border-b border-white/10 flex items-center justify-between px-4 lg:px-8 fixed top-0 left-0 lg:left-64 right-0 z-20">
+      <div className="flex items-center gap-2 lg:gap-4">
+        <h2 className="text-sm lg:text-lg font-semibold text-white truncate max-w-[120px] lg:max-w-none">{settings.companyName}</h2>
         
-        {/* Data Status Indicator */}
-        <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 ml-4">
+        {/* Data Status Indicator - Hidden on very small screens */}
+        <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 ml-2 lg:ml-4">
           {dataStatus.source === 'firestore' ? (
             <>
-              <Cloud size={14} className="text-emerald-500" />
-              <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Sincronizado</span>
+              <Cloud size={12} className="text-emerald-500" />
+              <span className="text-[8px] lg:text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Sincronizado</span>
             </>
           ) : (
             <>
-              <Database size={14} className="text-orange-500" />
-              <span className="text-[10px] font-bold text-orange-500 uppercase tracking-widest">Modo Local</span>
+              <Database size={12} className="text-orange-500" />
+              <span className="text-[8px] lg:text-[10px] font-bold text-orange-500 uppercase tracking-widest">Modo Local</span>
             </>
           )}
         </div>
-
-        {/* Migration Progress Indicator */}
-        {isMigrating && (
-          <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 animate-pulse">
-            <RefreshCw size={14} className="text-blue-500 animate-spin" />
-            <span className="text-[10px] font-bold text-blue-500 uppercase tracking-widest">Migrando Dados...</span>
-          </div>
-        )}
-
-        {/* Migration Warning for Admin */}
-        {!isMigrated && !isMigrating && currentUser.role === 'administrador' && dataStatus.counts.projects > 0 && (
-          <Link 
-            to="/configuracoes"
-            className="flex items-center gap-2 px-3 py-1 rounded-full bg-orange-500/10 border border-orange-500/20 hover:bg-orange-500/20 transition-colors"
-          >
-            <AlertTriangle size={14} className="text-orange-500" />
-            <span className="text-[10px] font-bold text-orange-500 uppercase tracking-widest">Migração Pendente</span>
-          </Link>
-        )}
       </div>
 
-      <div className="flex items-center gap-6">
+      <div className="flex items-center gap-3 lg:gap-6">
         <button className="text-gray-400 hover:text-white transition-colors">
-          <Bell size={20} />
+          <Bell size={18} />
         </button>
         
-        <div className="flex items-center gap-4 pl-6 border-l border-white/10">
-          <div className="flex flex-col items-end">
-            <span className="text-sm font-semibold text-white leading-tight">{currentUser.name}</span>
-            <span className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">{currentUser.role}</span>
+        <div className="flex items-center gap-2 lg:gap-4 pl-3 lg:pl-6 border-l border-white/10">
+          <div className="hidden md:flex flex-col items-end">
+            <span className="text-xs lg:text-sm font-semibold text-white leading-tight">{currentUser.name}</span>
+            <span className="text-[8px] lg:text-[10px] text-gray-500 uppercase font-bold tracking-wider">{currentUser.role}</span>
           </div>
           
           <div className="group relative">
-            <div className="w-9 h-9 rounded-full bg-[#F97316] flex items-center justify-center text-white font-bold text-sm shadow-lg shadow-orange-500/20 cursor-pointer">
+            <div className="w-8 h-8 lg:w-9 lg:h-9 rounded-full bg-[#F97316] flex items-center justify-center text-white font-bold text-xs lg:text-sm shadow-lg shadow-orange-500/20 cursor-pointer">
               {initials}
             </div>
             

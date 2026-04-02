@@ -12,6 +12,7 @@ import ResponsaveisPage from './pages/ResponsaveisPage';
 import UsuariosPage from './pages/UsuariosPage';
 import ConfiguracoesPage from './pages/ConfiguracoesPage';
 import ModelosPage from './pages/ModelosPage';
+import MorePage from './pages/MorePage';
 import NotFoundPage from './pages/NotFoundPage';
 
 export default function App() {
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="usuarios" element={<UsuariosPage />} />
             <Route path="modelos-obra" element={<ModelosPage />} />
             <Route path="configuracoes" element={<ConfiguracoesPage />} />
+            <Route path="mais" element={<MorePage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>
         </Routes>

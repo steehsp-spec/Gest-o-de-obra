@@ -58,9 +58,8 @@ export default function UsuariosPage() {
         await updateUser(editingUser.id, dataToUpdate);
       } else {
         const result = await addUser(formData);
-        if (result === 'auth-exists') {
-          alert('Este e-mail já possui uma conta de acesso no Firebase Auth. O perfil será criado e vinculado automaticamente no Firestore assim que o usuário realizar o primeiro login no sistema.');
-        }
+        // The profile is now created automatically in addUser, so no alert needed.
+        console.log('Usuário criado/vinculado com UID:', result);
       }
       setIsModalOpen(false);
       setEditingUser(null);
@@ -118,15 +117,15 @@ export default function UsuariosPage() {
   };
 
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-8">
+    <div className="p-4 lg:p-8 pb-24 lg:pb-8">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-white">Gestão de Usuários</h1>
-          <p className="text-gray-400 text-sm">Controle de acessos e perfis do sistema</p>
+          <h1 className="text-xl lg:text-2xl font-bold text-white">Gestão de Usuários</h1>
+          <p className="text-gray-400 text-xs lg:text-sm">Controle de acessos e perfis do sistema</p>
         </div>
         <button 
           onClick={() => handleOpenModal()}
-          className="bg-[#F97316] hover:bg-[#EA580C] text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors font-semibold"
+          className="bg-[#F97316] hover:bg-[#EA580C] text-white px-4 py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors font-semibold w-full lg:w-auto"
         >
           <UserPlus size={20} />
           Novo Usuário
@@ -134,20 +133,21 @@ export default function UsuariosPage() {
       </div>
 
       <div className="bg-[#161B22] rounded-2xl border border-white/10 overflow-hidden">
-        <div className="p-6 border-b border-white/10 flex items-center justify-between gap-4">
-          <div className="relative flex-1 max-w-md">
+        <div className="p-4 lg:p-6 border-b border-white/10">
+          <div className="relative w-full lg:max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
             <input 
               type="text" 
               placeholder="Buscar por nome ou e-mail..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-[#0B0E14] border border-white/10 rounded-lg pl-10 pr-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-[#F97316]"
+              className="w-full bg-[#0B0E14] border border-white/10 rounded-lg pl-10 pr-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-[#F97316] text-sm"
             />
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* Desktop Table View */}
+        <div className="hidden lg:block overflow-x-auto">
           <table className="w-full text-left">
             <thead>
               <tr className="bg-[#0B0E14] text-gray-400 text-xs uppercase tracking-wider">
@@ -217,6 +217,75 @@ export default function UsuariosPage() {
               ))}
             </tbody>
           </table>
+        </div>
+
+        {/* Mobile Card View */}
+        <div className="lg:hidden divide-y divide-white/5">
+          {filteredUsers.map((user) => (
+            <div key={user.id} className="p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-[#F97316]/20 flex items-center justify-center text-[#F97316] font-bold">
+                    {user.name.charAt(0)}
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-white font-medium">{user.name}</span>
+                    <span className="text-gray-500 text-xs">{user.email}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button 
+                    onClick={() => toggleStatus(user)}
+                    className={`p-2 transition-colors ${user.status === 'ativo' ? 'text-gray-400' : 'text-emerald-500'}`}
+                  >
+                    <Power size={18} />
+                  </button>
+                  <button 
+                    onClick={() => handleOpenModal(user)}
+                    className="p-2 text-gray-400" 
+                  >
+                    <Edit2 size={18} />
+                  </button>
+                  <button 
+                    onClick={() => handleDelete(user.id)}
+                    className="p-2 text-gray-400" 
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <span className="text-[10px] text-gray-500 uppercase tracking-wider block">Perfil</span>
+                  {getRoleBadge(user.role)}
+                </div>
+                <div className="space-y-1">
+                  <span className="text-[10px] text-gray-500 uppercase tracking-wider block">Status</span>
+                  <span className={`px-2 py-1 rounded-full text-[10px] font-medium border inline-block ${
+                    user.status === 'ativo' 
+                      ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' 
+                      : 'bg-red-500/10 text-red-500 border-red-500/20'
+                  }`}>
+                    {user.status === 'ativo' ? 'Ativo' : 'Inativo'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="bg-[#0B0E14] rounded-lg p-3 space-y-2">
+                <div className="flex items-center gap-2 text-xs text-gray-300">
+                  <Mail size={14} className="text-gray-500" />
+                  {user.email}
+                </div>
+                {user.phone && (
+                  <div className="flex items-center gap-2 text-xs text-gray-300">
+                    <Phone size={14} className="text-gray-500" />
+                    {user.phone}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 

@@ -1,808 +1,609 @@
 import React, { useState, useMemo } from 'react';
-import { Plus, Edit2, Trash2, ChevronRight, ChevronDown, AlertTriangle, AlertCircle, Download, Loader2, Layout, Calendar } from 'lucide-react';
 import { useData } from '../contexts/DataContext';
-import { ScheduleItem, Complexity, Pendency } from '../types';
+import { CronogramaHeader, SummaryPanel, StageBlock } from '../components/cronograma/CronogramaComponents';
 import Modal from '../components/ui/Modal';
-import ConfirmModal from '../components/ui/ConfirmModal';
-import { exportToPdf } from '../utils/pdfExport';
+import { Filter, X, Search, AlertTriangle, Layout } from 'lucide-react';
+import { Complexity, ScheduleItem } from '../types';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { compareDates, addDays, getDaysBetween } from '../utils/dateUtils';
 import { InlineDateInput } from '../components/InlineDateInput';
-
-const getProgressColor = (val: number) => {
-  if (val === 0) return 'bg-gray-600';
-  if (val <= 25) return 'bg-yellow-500';
-  if (val <= 50) return 'bg-blue-500';
-  if (val <= 75) return 'bg-emerald-500';
-  return 'bg-green-600';
-};
-
-const QuickProgress = ({ current, onUpdate }: { current: number, onUpdate: (val: number) => void }) => (
-  <div className="flex items-center gap-1">
-    {[0, 25, 50, 75, 100].map(val => {
-      const colorClass = getProgressColor(val);
-      return (
-        <button
-          key={val}
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onUpdate(val); }}
-          className={`text-[9px] px-1.5 py-0.5 rounded border transition-all ${
-            current === val 
-              ? `${colorClass} border-transparent text-white font-bold shadow-lg shadow-black/20` 
-              : 'bg-transparent border-white/10 text-gray-400 hover:border-white/30 hover:text-white'
-          }`}
-        >
-          {val}%
-        </button>
-      );
-    })}
-  </div>
-);
 
 export default function CronogramaPage() {
   const { 
-    scheduleItems, 
-    addScheduleItem, 
-    updateScheduleItem, 
-    deleteScheduleItem, 
+    scheduleItems,
     projects, 
-    users, 
-    pendencies, 
-    addPendency, 
-    currentUser
+    addScheduleItem,
+    updateScheduleItem,
+    deleteScheduleItem,
+    updateProject,
+    users
   } = useData();
+
+  // Local State
+  const [filterProject, setFilterProject] = useState<string>('');
+  
+  // Modals State
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isPendencyModalOpen, setIsPendencyModalOpen] = useState(false);
-  const [selectedScheduleItemForPendency, setSelectedScheduleItemForPendency] = useState<ScheduleItem | null>(null);
-  const [dependencySearchTerm, setDependencySearchTerm] = useState('');
-  const [pendencyFormData, setPendencyFormData] = useState<Omit<Pendency, 'id'>>({
-    title: '',
-    description: '',
-    projectId: '',
-    stage: '',
-    scheduleItemId: '',
-    origin: 'cronograma',
-    responsibleId: '',
-    priority: 'media',
-    deadline: '',
-    status: 'aberta',
-    createdAt: '',
+  const [editingItem, setEditingItem] = useState<any>(null);
+  const [parentStepId, setParentStepId] = useState<string | null>(null);
+  
+  // Filter State
+  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState({
+    status: '',
+    responsible: '',
+    search: ''
   });
 
-  const getPendencyStats = (itemId: string) => {
-    const itemPendencies = pendencies.filter(p => p.scheduleItemId === itemId);
-    const open = itemPendencies.filter(p => p.status === 'aberta').length;
-    const inProgress = itemPendencies.filter(p => p.status === 'em_andamento').length;
-    const resolved = itemPendencies.filter(p => p.status === 'resolvida').length;
+  const project = projects.find(p => p.id === filterProject);
+
+  // Calculate Project Steps with Progress and Dates
+  const projectSteps = useMemo(() => {
+    if (!filterProject || !project) return [];
     
-    return { total: itemPendencies.length, open, inProgress, resolved };
-  };
+    let items = scheduleItems.filter(s => s.projectId === filterProject);
 
-  const getPendencyIndicatorColor = (stats: { open: number, inProgress: number, resolved: number }) => {
-    if (stats.open > 0) return 'text-red-500 bg-red-500/10 border-red-500/20';
-    if (stats.inProgress > 0) return 'text-amber-500 bg-amber-500/10 border-amber-500/20';
-    if (stats.resolved > 0) return 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20';
-    return 'text-gray-500 bg-gray-500/10 border-gray-500/20';
-  };
-
-  const handleCreatePendency = (item: ScheduleItem) => {
-    setSelectedScheduleItemForPendency(item);
-    setPendencyFormData({
-      title: `Pendência: ${item.title}`,
-      description: '',
-      projectId: item.projectId,
-      stage: item.parentStepId ? scheduleItems.find(s => s.id === item.parentStepId)?.title || '' : item.title,
-      scheduleItemId: item.id,
-      origin: 'cronograma',
-      responsibleId: item.responsibleId,
-      priority: 'media',
-      deadline: item.endDate,
-      status: 'aberta',
-      createdAt: new Date().toISOString(),
+    const mainStepsRaw = items
+      .filter(s => !s.parentStepId)
+      .sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
+    
+    const calculatedSteps = mainStepsRaw.map(step => {
+      const subSteps = items
+        .filter(s => s.parentStepId === step.id)
+        .sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
+      
+      return {
+        ...step,
+        subSteps
+      };
     });
-    setIsPendencyModalOpen(true);
-  };
 
-  const handlePendencySubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      await addPendency({
-        ...pendencyFormData,
-        createdAt: new Date().toISOString(),
-      });
-      setIsPendencyModalOpen(false);
-    } catch (error) {
-      console.error('Error creating pendency:', error);
-      alert('Erro ao criar pendência.');
+    // Apply Filters to the calculated steps
+    let filteredSteps = calculatedSteps;
+    
+    if (filters.status || filters.responsible || filters.search) {
+      filteredSteps = filteredSteps.map(step => {
+        const filteredSubSteps = step.subSteps.filter(sub => {
+          const matchesStatus = !filters.status || sub.status === filters.status;
+          const matchesResponsible = !filters.responsible || sub.responsibleId === filters.responsible;
+          const matchesSearch = !filters.search || 
+            sub.title.toLowerCase().includes(filters.search.toLowerCase()) ||
+            step.title.toLowerCase().includes(filters.search.toLowerCase());
+          return matchesStatus && matchesResponsible && matchesSearch;
+        });
+
+        // If the main step matches the search but has no sub-steps matching, we might still want to show it
+        const mainMatchesSearch = !filters.search || step.title.toLowerCase().includes(filters.search.toLowerCase());
+        
+        if (filteredSubSteps.length > 0 || mainMatchesSearch) {
+          return { ...step, subSteps: filteredSubSteps };
+        }
+        return null;
+      }).filter(Boolean) as any[];
     }
-  };
-  const [editingItem, setEditingItem] = useState<ScheduleItem | null>(null);
-  const [filterProject, setFilterProject] = useState(projects[0]?.id || '');
-  const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
-  const [itemToDelete, setItemToDelete] = useState<string | null>(null);
 
-  const [formData, setFormData] = useState<Omit<ScheduleItem, 'id'>>({
-    projectId: filterProject,
-    parentStepId: undefined,
+    return filteredSteps;
+  }, [scheduleItems, filterProject, filters]);
+
+  // Calculate Overall Progress for selected project
+  const overallProgress = useMemo(() => {
+    if (!filterProject || projectSteps.length === 0) return 0;
+    
+    // Use all items for real progress, not just filtered ones
+    const allItems = scheduleItems.filter(s => s.projectId === filterProject);
+    const mainSteps = allItems.filter(s => !s.parentStepId);
+    
+    const totalWeight = mainSteps.reduce((acc, s) => acc + (Number(s.weight) || 0), 0);
+    if (totalWeight === 0) return 0;
+    
+    const weightedProgress = mainSteps.reduce((acc, s) => {
+      const weight = Number(s.weight) || 0;
+      const progress = Number(s.progress) || 0;
+      return acc + (progress * (weight / totalWeight));
+    }, 0);
+    
+    return Math.round(weightedProgress);
+  }, [scheduleItems, filterProject, projectSteps.length]);
+
+  // Helper function to format YYYY-MM-DD to DD/MM/YYYY
+  const formatDateToBR = (dateStr: string | null | undefined) => {
+    if (!dateStr) return '-';
+    const parts = dateStr.split('-');
+    if (parts.length !== 3) return dateStr;
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  };
+
+  // Form State
+  const [formData, setFormData] = useState({
     title: '',
+    weight: 0,
+    progress: 0,
+    complexity: 'media' as Complexity,
     responsibleId: '',
-    responsavelTipo: 'usuario',
-    responsavelUserId: '',
-    responsavelNome: '',
+    status: 'pendente' as 'pendente' | 'em_andamento' | 'concluido' | 'atrasado',
     startDate: '',
     endDate: '',
-    progress: 0,
-    weight: 1,
-    complexity: 'media',
-    status: 'pendente',
-    dependsOnId: '',
-    dependsOnIds: [],
-    followScheduleOrder: false,
-    workFront: 'Outros'
+    liberatingActivityId: '',
+    linkType: 'FS' as 'FS' | 'SS',
+    workFront: '',
+    dateLockedManual: false
   });
 
-  const handleOpenModal = (item?: ScheduleItem, parentId?: string) => {
+  const handleOpenModal = (item?: any, parentId?: string) => {
     if (item) {
       setEditingItem(item);
-      setFormData({ 
-        ...item,
-        responsavelTipo: item.responsavelTipo || 'usuario',
-        responsavelUserId: item.responsavelUserId || item.responsibleId || '',
-        responsavelNome: item.responsavelNome || (item.responsibleId ? users.find(u => u.id === item.responsibleId)?.name : '') || '',
-        dependsOnIds: item.dependsOnIds || (item.dependsOnId ? [item.dependsOnId] : []),
-        followScheduleOrder: item.followScheduleOrder || false,
-        workFront: item.workFront || 'Outros'
+      setFormData({
+        title: item.title || '',
+        weight: item.weight || 0,
+        progress: item.progress || 0,
+        complexity: (item.complexity || 'media') as Complexity,
+        responsibleId: item.responsibleId || '',
+        status: (item.status || 'pendente') as any,
+        startDate: item.startDate || '',
+        endDate: item.endDate || '',
+        liberatingActivityId: item.liberatingActivityId || '',
+        linkType: item.linkType || 'FS',
+        workFront: item.workFront || '',
+        dateLockedManual: item.dateLockedManual || false
       });
     } else {
       setEditingItem(null);
+      setParentStepId(parentId || null);
+      
+      const today = new Date();
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      
       setFormData({
-        projectId: filterProject,
-        parentStepId: parentId,
         title: '',
-        responsibleId: '',
-        responsavelTipo: 'usuario',
-        responsavelUserId: '',
-        responsavelNome: '',
-        startDate: '',
-        endDate: '',
+        weight: 0,
         progress: 0,
-        weight: parentId ? 2 : 10, // Default complexity weight 2 for sub-steps, 10% for main steps
-        complexity: 'media',
+        complexity: 'media' as Complexity,
+        responsibleId: '',
         status: 'pendente',
-        dependsOnId: '',
-        dependsOnIds: [],
-        followScheduleOrder: false,
-        workFront: 'Outros'
+        startDate: todayStr,
+        endDate: todayStr,
+        liberatingActivityId: '',
+        linkType: 'FS',
+        workFront: '',
+        dateLockedManual: false
       });
     }
     setIsModalOpen(true);
   };
 
-  const projectSteps = useMemo(() => {
-    const mainSteps = scheduleItems.filter(s => s.projectId === filterProject && !s.parentStepId);
-    return mainSteps
-      .sort((a, b) => (a.ordem || 0) - (b.ordem || 0))
-      .map(step => ({
-        ...step,
-        subSteps: scheduleItems
-          .filter(s => s.parentStepId === step.id)
-          .sort((a, b) => (a.ordem || 0) - (b.ordem || 0))
-      }));
-  }, [scheduleItems, filterProject]);
-
-  const allProjectItemsOrdered = useMemo(() => {
-    const ordered: ScheduleItem[] = [];
-    projectSteps.forEach(step => {
-      ordered.push(step);
-      step.subSteps.forEach(sub => {
-        ordered.push(sub);
-      });
-    });
-    return ordered;
-  }, [projectSteps]);
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    const finalData = { ...formData };
-    
-    // Apply "Follow Schedule Order" logic
-    if (finalData.followScheduleOrder) {
-      const currentIndex = allProjectItemsOrdered.findIndex(item => item.id === editingItem?.id);
-      let previousItem: ScheduleItem | null = null;
-      if (editingItem && currentIndex > 0) {
-        previousItem = allProjectItemsOrdered[currentIndex - 1];
-      } else if (!editingItem && allProjectItemsOrdered.length > 0) {
-        previousItem = allProjectItemsOrdered[allProjectItemsOrdered.length - 1];
-      }
-      
-      if (previousItem) {
-        const currentIds = finalData.dependsOnIds || [];
-        if (!currentIds.includes(previousItem.id)) {
-          finalData.dependsOnIds = [...currentIds, previousItem.id];
-        }
-      }
-    }
+    if (!filterProject) return;
 
-    if (finalData.responsavelTipo === 'usuario') {
-      const user = users.find(u => u.id === finalData.responsavelUserId);
-      finalData.responsavelNome = user ? user.name : '';
-      finalData.responsibleId = finalData.responsavelUserId;
-    } else {
-      finalData.responsavelUserId = '';
-      finalData.responsibleId = '';
-    }
+    const data: Omit<ScheduleItem, 'id'> = {
+      ...formData,
+      projectId: filterProject,
+      parentStepId: (editingItem ? editingItem.parentStepId : parentStepId) || undefined,
+      ordem: editingItem ? editingItem.ordem : (scheduleItems.filter(s => s.projectId === filterProject && s.parentStepId === (parentStepId || undefined)).length),
+      startDateManual: formData.dateLockedManual,
+      endDateManual: formData.dateLockedManual,
+      dateLockedManual: formData.dateLockedManual
+    };
 
     if (editingItem) {
-      updateScheduleItem(editingItem.id, finalData);
+      await updateScheduleItem(editingItem.id, data);
     } else {
-      addScheduleItem(finalData);
+      await addScheduleItem(data);
     }
     setIsModalOpen(false);
   };
 
-  const handleDelete = (id: string) => {
-    setItemToDelete(id);
+  const handleUpdateSubStageProgress = async (subId: string, val: number) => {
+    const subItem = scheduleItems.find(i => i.id === subId);
+    if (!subItem) return;
+
+    let newStatus: any = 'pendente';
+    if (val === 100) newStatus = 'concluido';
+    else if (val >= 75) newStatus = 'finalizando';
+    else if (val >= 50) newStatus = 'revisao';
+    else if (val >= 25) newStatus = 'em_processo';
+    else if (val > 0) newStatus = 'em_processo'; // Default for > 0 but < 25
+    
+    await updateScheduleItem(subId, { progress: val, status: newStatus });
   };
 
-  const confirmDelete = () => {
-    if (itemToDelete) {
-      deleteScheduleItem(itemToDelete);
-      setItemToDelete(null);
+  const handleUpdateProjectField = async (field: string, value: any) => {
+    if (!project) return;
+    await updateProject(project.id, { [field]: value });
+  };
+
+  const totalWeights = useMemo(() => {
+    const mainSteps = scheduleItems.filter(s => s.projectId === filterProject && !s.parentStepId);
+    return mainSteps.reduce((acc, curr) => acc + (Number(curr.weight) || 0), 0);
+  }, [scheduleItems, filterProject]);
+
+  const projectStatus = useMemo(() => {
+    const endDateStr = project?.endDate;
+    if (!endDateStr) return { status: 'ok', label: 'Dentro do prazo' };
+    
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    
+    if (endDateStr < todayStr && overallProgress < 100) {
+      return { status: 'delayed', label: 'Atrasado' };
     }
-  };
-
-  const toggleStep = (id: string) => {
-    setExpandedSteps(prev => 
-      prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
-    );
-  };
-
-  const totalMainWeight = useMemo(() => {
-    return projectSteps.reduce((acc, step) => acc + step.weight, 0);
-  }, [projectSteps]);
-
-  const overallProgress = useMemo(() => {
-    if (projectSteps.length === 0) return 0;
     
-    // Calculate overall progress based on real weights of sub-steps (or main steps if no sub-steps)
-    const projectItems = scheduleItems.filter(s => s.projectId === filterProject);
-    let totalWeightedProgress = 0;
+    return { status: 'ok', label: 'Dentro do prazo' };
+  }, [project, overallProgress]);
+
+  // Calculate Dependency Options (Predecessors only, grouped by stage)
+  const dependencyOptions = useMemo(() => {
+    if (!filterProject) return [];
     
-    // We only sum realWeight * progress for "leaf" items:
-    // 1. Sub-steps
-    // 2. Main steps that have NO sub-steps
-    projectItems.forEach(item => {
-      const isSubStep = !!item.parentStepId;
-      const isMainStepWithoutSubSteps = !item.parentStepId && !projectItems.some(i => i.parentStepId === item.id);
-      
-      if ((isSubStep || isMainStepWithoutSubSteps) && item.realWeight && item.realWeight > 0) {
-        totalWeightedProgress += (item.progress * (item.realWeight / 100));
+    const allItems = scheduleItems.filter(s => s.projectId === filterProject);
+    
+    // Helper to get global position
+    const getPos = (item: any) => {
+      if (!item.parentStepId) return (item.ordem || 0) * 1000;
+      const parent = allItems.find(p => p.id === item.parentStepId);
+      return ((parent?.ordem || 0) * 1000) + (item.ordem || 0);
+    };
+
+    // Find current item's position
+    let currentPos = Infinity;
+    if (editingItem) {
+      currentPos = getPos(editingItem);
+    } else if (parentStepId) {
+      const parent = allItems.find(p => p.id === parentStepId);
+      const subStepsCount = allItems.filter(s => s.parentStepId === parentStepId).length;
+      currentPos = ((parent?.ordem || 0) * 1000) + subStepsCount;
+    } else {
+      const mainStepsCount = allItems.filter(s => !s.parentStepId).length;
+      currentPos = mainStepsCount * 1000;
+    }
+
+    // Filter predecessors
+    const predecessors = allItems.filter(i => {
+      if (i.id === editingItem?.id) return false;
+      return getPos(i) < currentPos;
+    });
+
+    // Group by Stage
+    const mainStages = allItems
+      .filter(i => !i.parentStepId)
+      .sort((a, b) => compareDates(a.startDate, b.startDate));
+
+    const grouped: { stage: string, items: any[] }[] = [];
+    
+    mainStages.forEach(stage => {
+      const stageItems = predecessors.filter(p => p.id === stage.id || p.parentStepId === stage.id);
+      if (stageItems.length > 0) {
+        grouped.push({
+          stage: stage.title,
+          items: stageItems.sort((a, b) => compareDates(a.startDate, b.startDate))
+        });
       }
     });
 
-    return Math.round(totalWeightedProgress);
-  }, [scheduleItems, filterProject, projectSteps]);
+    return grouped;
+  }, [scheduleItems, filterProject, editingItem, parentStepId]);
 
-  const getComplexityColor = (complexity?: Complexity) => {
-    switch (complexity) {
-      case 'alta': return 'text-red-400';
-      case 'media': return 'text-yellow-400';
-      case 'baixa': return 'text-emerald-400';
-      default: return 'text-gray-400';
-    }
-  };
-
-  const handleDateUpdate = (id: string, field: 'startDate' | 'endDate', value: string) => {
-    return updateScheduleItem(id, { [field]: value });
-  };
-
-  const handleQuickProgress = (id: string, progress: number) => {
-    updateScheduleItem(id, { progress });
-  };
+  const expectedEndDate = useMemo(() => {
+    if (project?.endDate) return formatDateToBR(project.endDate);
+    if (!project || !project.startDate || !project.totalDays) return '-';
+    // Se não tem endDate, mas tem startDate e totalDays, calcula (apenas para fallback)
+    const end = addDays(project.startDate, project.totalDays - 1);
+    return formatDateToBR(end);
+  }, [project]);
 
   const handleExportPdf = () => {
-    const project = projects.find(p => p.id === filterProject);
-    const projectName = project ? project.name : 'Todas as Obras';
+    if (!project) return;
     
-    exportToPdf({
-      title: 'Cronograma Executivo',
-      projectName,
-      userName: currentUser?.name,
-      filename: `cronograma-${projectName.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().split('T')[0]}.pdf`,
-      projectSteps,
-      overallProgress
+    const doc = new jsPDF('landscape');
+    
+    // Title
+    doc.setFontSize(18);
+    doc.text(`Cronograma - ${project.name}`, 14, 22);
+    
+    doc.setFontSize(11);
+    doc.text(`Data de Início: ${project.startDate ? formatDateToBR(project.startDate) : '-'} | Previsão de Término: ${expectedEndDate} | Progresso: ${overallProgress}%`, 14, 30);
+
+    const tableData: any[] = [];
+    
+    projectSteps.forEach(step => {
+      // Add main stage row
+      tableData.push([
+        { content: step.title, styles: { fontStyle: 'bold', fillColor: [22, 27, 34], textColor: [255, 255, 255] } },
+        { content: step.startDate ? formatDateToBR(step.startDate) : '-', styles: { fillColor: [22, 27, 34], textColor: [255, 255, 255] } },
+        { content: step.endDate ? formatDateToBR(step.endDate) : '-', styles: { fillColor: [22, 27, 34], textColor: [255, 255, 255] } },
+        { content: `${step.progress}%`, styles: { fontStyle: 'bold', fillColor: [22, 27, 34], textColor: [255, 255, 255] } },
+        { content: step.status, styles: { fillColor: [22, 27, 34], textColor: [255, 255, 255] } }
+      ]);
+
+      // Add substages
+      if (step.subSteps && step.subSteps.length > 0) {
+        step.subSteps.forEach((sub: any) => {
+          tableData.push([
+            `   ↳ ${sub.title}`,
+            sub.startDate ? formatDateToBR(sub.startDate) : '-',
+            sub.endDate ? formatDateToBR(sub.endDate) : '-',
+            `${sub.progress}%`,
+            sub.status
+          ]);
+        });
+      }
     });
+
+    autoTable(doc, {
+      startY: 35,
+      head: [['Etapa / Subetapa', 'Início', 'Fim', 'Progresso', 'Status']],
+      body: tableData,
+      theme: 'grid',
+      headStyles: { fillColor: [249, 115, 22], textColor: [255, 255, 255], fontStyle: 'bold' },
+      styles: { fontSize: 9, cellPadding: 3 },
+      columnStyles: {
+        0: { cellWidth: 120 },
+        1: { cellWidth: 30 },
+        2: { cellWidth: 30 },
+        3: { cellWidth: 30 },
+        4: { cellWidth: 40 }
+      }
+    });
+
+    doc.save(`cronograma_${project.name.replace(/\s+/g, '_').toLowerCase()}.pdf`);
   };
 
-  const workFronts = ['Civil', 'Elétrica', 'Gesso', 'Hidráulica', 'Outros'];
-  const workFrontSummary = workFronts.map(front => {
-    const items = scheduleItems.filter(item => item.projectId === filterProject && item.workFront === front);
-    if (items.length === 0) return null;
-
-    const startDates = items.filter(i => i.startDate).map(i => new Date(i.startDate!));
-    const endDates = items.filter(i => i.endDate).map(i => new Date(i.endDate!));
-
-    if (startDates.length === 0 || endDates.length === 0) return null;
-
-    const minStart = new Date(Math.min(...startDates.map(d => d.getTime())));
-    const maxEnd = new Date(Math.max(...endDates.map(d => d.getTime())));
-    
-    // Calculate duration in days
-    const duration = Math.ceil((maxEnd.getTime() - minStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-
-    // Determine status
-    let status: 'ok' | 'attention' | 'delayed' = 'ok';
-    const today = new Date();
-    const progress = items.reduce((acc, item) => acc + (item.progress || 0), 0) / items.length;
-
-    if (maxEnd < today && progress < 100) {
-      status = 'delayed';
-    } else if (maxEnd.getTime() - today.getTime() < 3 * 24 * 60 * 60 * 1000 && progress < 100) {
-      status = 'attention';
-    }
-
-    return {
-      name: front,
-      duration,
-      startDate: minStart,
-      endDate: maxEnd,
-      status
-    };
-  }).filter(Boolean);
-
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">Cronograma Executivo</h1>
-          <p className="text-gray-400 text-sm">Planejamento e controle físico da obra</p>
-        </div>
-        <div className="flex items-center gap-4">
-          <select 
-            value={filterProject}
-            onChange={(e) => setFilterProject(e.target.value)}
-            className="bg-[#161B22] border border-white/10 rounded-lg px-4 py-2 text-white text-sm focus:outline-none focus:border-[#F97316]"
-          >
-            <option value="">Selecione a Obra</option>
-            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-          <button 
-            onClick={handleExportPdf}
-            disabled={!filterProject}
-            className="bg-[#161B22] hover:bg-white/5 border border-white/10 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Download size={20} />
-            Exportar PDF
-          </button>
-          <button 
-            onClick={() => handleOpenModal()}
-            className="bg-[#F97316] hover:bg-[#EA580C] text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors font-semibold"
-          >
-            <Plus size={20} />
-            Nova Etapa Principal
-          </button>
-        </div>
-      </div>
-
+    <div className="p-4 lg:p-8 bg-[#0B0E14] min-h-screen text-white">
+      <CronogramaHeader 
+        projects={projects}
+        selectedProjectId={filterProject || ''}
+        onSelectProject={setFilterProject}
+        onAddEtapa={() => handleOpenModal()}
+        onExportPdf={handleExportPdf}
+      />
+      
       {filterProject ? (
         <>
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-            <div className="lg:col-span-2 bg-[#161B22] p-6 rounded-2xl border border-white/10 flex items-center justify-between">
-              <div className="flex-1">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-gray-400 text-sm font-semibold uppercase tracking-wider">Progresso Geral da Obra</span>
-                  <span className="text-2xl font-bold text-white">{overallProgress}%</span>
-                </div>
-                <div className="w-full bg-[#0B0E14] h-3 rounded-full overflow-hidden">
-                  <div 
-                    className={`h-full ${getProgressColor(overallProgress)} transition-all duration-1000`} 
-                    style={{ width: `${overallProgress}%` }}
-                  ></div>
-                </div>
-              </div>
-            </div>
-            
-            <div className={`p-6 rounded-2xl border flex items-center gap-4 ${totalMainWeight === 100 ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-amber-500/10 border-amber-500/20'}`}>
-              <div className={`p-3 rounded-xl ${totalMainWeight === 100 ? 'bg-emerald-500/20 text-emerald-500' : 'bg-amber-500/20 text-amber-500'}`}>
-                <AlertTriangle size={24} />
-              </div>
-              <div>
-                <p className="text-xs text-gray-400 uppercase font-bold">Soma dos Pesos</p>
-                <p className={`text-xl font-bold ${totalMainWeight === 100 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                  {totalMainWeight}% / 100%
-                </p>
-                {totalMainWeight !== 100 && (
-                  <p className="text-[10px] text-amber-500/80 mt-1">Ajuste os pesos das etapas principais para totalizar 100%.</p>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Resumo por Frente de Trabalho */}
-          <div className="mb-6">
-            <h3 className="text-white font-bold mb-4 flex items-center gap-2">
-              <Layout size={20} className="text-[#F97316]" />
-              Resumo por Frente de Trabalho
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-              {workFrontSummary.map((front: any) => (
-                <div key={front.name} className="bg-[#161B22] p-4 rounded-xl border border-white/10 hover:border-[#F97316]/30 transition-all group">
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm font-bold text-white">{front.name}</span>
-                    <div className={`w-2 h-2 rounded-full ${
-                      front.status === 'delayed' ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : 
-                      front.status === 'attention' ? 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]' : 
-                      'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
-                    }`}></div>
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-[10px]">
-                      <span className="text-gray-400 uppercase">Duração Total</span>
-                      <span className="text-[#F97316] font-bold">{front.duration} dias</span>
-                    </div>
-                    <div className="flex items-center justify-between text-[10px]">
-                      <span className="text-gray-400 uppercase">Início</span>
-                      <span className="text-white">{front.startDate.toLocaleDateString('pt-BR')}</span>
-                    </div>
-                    <div className="flex items-center justify-between text-[10px]">
-                      <span className="text-gray-400 uppercase">Término</span>
-                      <span className="text-white">{front.endDate.toLocaleDateString('pt-BR')}</span>
-                    </div>
-                    {/* Visual Bar */}
-                    <div className="pt-2">
-                      <div className="w-full bg-[#0B0E14] h-1.5 rounded-full overflow-hidden">
-                        <div 
-                          className={`h-full transition-all duration-500 ${
-                            front.status === 'delayed' ? 'bg-red-500' : 
-                            front.status === 'attention' ? 'bg-amber-500' : 
-                            'bg-emerald-500'
-                          }`}
-                          style={{ width: '100%' }}
-                        ></div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="bg-[#161B22] rounded-2xl border border-white/10 overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-[#0B0E14] text-gray-300 text-[13px] uppercase tracking-wider">
-                    <th className="px-6 py-4 font-extrabold border-b border-white/5">Etapa / Subetapa</th>
-                    <th className="px-4 py-4 font-extrabold border-b border-white/5">Responsável</th>
-                    <th className="px-4 py-4 font-extrabold border-b border-white/5">Datas</th>
-                    <th className="px-4 py-4 font-extrabold border-b border-white/5">Depende de</th>
-                    <th className="px-4 py-4 font-extrabold border-b border-white/5">Complexidade</th>
-                    <th className="px-4 py-4 font-extrabold border-b border-white/5">Peso Int.</th>
-                    <th className="px-4 py-4 font-extrabold border-b border-white/5">Peso Real</th>
-                    <th className="px-6 py-4 font-extrabold border-b border-white/5">Progresso / Atualização Rápida</th>
-                    <th className="px-6 py-4 font-extrabold border-b border-white/5 text-right">Ações</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {projectSteps.map((step) => (
-                    <React.Fragment key={step.id}>
-                      <tr className="hover:bg-white/5 transition-colors group bg-[#161B22]">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2">
-                            <button 
-                              onClick={() => toggleStep(step.id)}
-                              className="text-gray-500 hover:text-white transition-colors"
-                            >
-                              {expandedSteps.includes(step.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-                            </button>
-                            <span className="text-blue-400 font-extrabold text-base tracking-wide">{step.title}</span>
-                            {step.workFront && (
-                              <span className="px-1.5 py-0.5 rounded bg-white/5 text-gray-500 text-[9px] font-bold uppercase border border-white/10">
-                                {step.workFront}
-                              </span>
-                            )}
-                            {(() => {
-                              if (!step.endDate || step.progress === 100) return null;
-                              const end = new Date(step.endDate);
-                              const today = new Date();
-                              const diffDays = Math.ceil((end.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-                              
-                              if (diffDays < 0) {
-                                return (
-                                  <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-500 text-[10px] font-bold uppercase ml-2">
-                                    Atrasada
-                                  </span>
-                                );
-                              }
-                              if (diffDays <= 3) {
-                                return (
-                                  <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-500 text-[10px] font-bold uppercase ml-2">
-                                    Atenção
-                                  </span>
-                                );
-                              }
-                              return null;
-                            })()}
-                            {(() => {
-                              const stats = getPendencyStats(step.id);
-                              if (stats.total > 0) {
-                                return (
-                                  <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-bold ml-2 ${getPendencyIndicatorColor(stats)}`}>
-                                    <AlertCircle size={12} />
-                                    <span>{stats.open + stats.inProgress}</span>
-                                  </div>
-                                );
-                              }
-                              return null;
-                            })()}
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 text-gray-300 text-xs">
-                          {step.responsavelNome || (step.responsibleId ? users.find(u => u.id === step.responsibleId)?.name : '')}
-                        </td>
-                        <td className="px-4 py-5">
-                          <div className="flex flex-col gap-1.5 text-[15px] text-gray-300 font-medium leading-relaxed">
-                            <div className="flex items-center gap-2">
-                              <Calendar size={14} className="text-[#F97316] shrink-0" />
-                              <InlineDateInput value={step.startDate || ''} onUpdate={(val) => handleDateUpdate(step.id, 'startDate', val)} />
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <Calendar size={14} className="text-blue-400 shrink-0" />
-                              <InlineDateInput value={step.endDate || ''} onUpdate={(val) => handleDateUpdate(step.id, 'endDate', val)} />
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-5 text-gray-500 text-sm">
-                          {(() => {
-                            const deps = step.dependsOnIds || (step.dependsOnId ? [step.dependsOnId] : []);
-                            if (deps.length === 0) return '-';
-                            return deps.map(id => {
-                              const dep = scheduleItems.find(s => s.id === id);
-                              return dep ? dep.title : 'Desconhecido';
-                            }).join(', ');
-                          })()}
-                        </td>
-                          <td className="px-4 py-5">
-                            <span className={`text-xs font-bold uppercase tracking-wider ${getComplexityColor(step.complexity)}`}>
-                              {step.complexity || '-'}
-                            </span>
-                          </td>
-                          <td className="px-4 py-5">
-                            <span className="text-sm font-bold text-white bg-white/5 px-2.5 py-1.5 rounded">
-                              {step.weight}%
-                            </span>
-                          </td>
-                          <td className="px-4 py-5 text-gray-500 text-sm">-</td>
-                          <td className="px-6 py-5">
-                          <div className="space-y-3">
-                            <div className="flex items-center gap-3">
-                              <div className="flex-1 bg-[#0B0E14] h-4 rounded-full overflow-hidden min-w-[120px] shadow-inner">
-                                <div className={`h-full ${getProgressColor(step.progress)} transition-all duration-500 rounded-full`} style={{ width: `${step.progress}%` }}></div>
-                              </div>
-                              <span className="text-sm text-white font-bold w-10 text-right">{step.progress}%</span>
-                            </div>
-                            <QuickProgress current={step.progress} onUpdate={(val) => handleQuickProgress(step.id, val)} />
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button 
-                              onClick={() => handleCreatePendency(step)}
-                              className="p-2 text-gray-400 hover:text-amber-500 transition-colors" 
-                              title="Criar Pendência"
-                            >
-                              <AlertCircle size={18} />
-                            </button>
-                            <button 
-                              onClick={() => handleOpenModal(undefined, step.id)}
-                              className="p-2 text-gray-400 hover:text-emerald-500 transition-colors" 
-                              title="Adicionar Subetapa"
-                            >
-                              <Plus size={18} />
-                            </button>
-                            <button 
-                              onClick={() => handleOpenModal(step)}
-                              className="p-2 text-gray-400 hover:text-[#F97316] transition-colors"
-                            >
-                              <Edit2 size={18} />
-                            </button>
-                            <button 
-                              onClick={() => handleDelete(step.id)}
-                              className="p-2 text-gray-400 hover:text-red-500 transition-colors"
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                      {expandedSteps.includes(step.id) && step.subSteps.map(sub => (
-                        <tr key={sub.id} className="bg-[#0B0E14]/30 hover:bg-white/10 transition-colors group">
-                          <td className="px-6 py-3 pl-14">
-                            <div className="flex items-center gap-2">
-                              <span className="text-gray-300 text-[15px] font-medium">{sub.title}</span>
-                              {sub.workFront && (
-                                <span className="px-1.5 py-0.5 rounded bg-white/5 text-gray-500 text-[9px] font-bold uppercase border border-white/10">
-                                  {sub.workFront}
-                                </span>
-                              )}
-                              {(() => {
-                                const stats = getPendencyStats(sub.id);
-                                if (stats.total > 0) {
-                                  return (
-                                    <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-bold ml-2 ${getPendencyIndicatorColor(stats)}`}>
-                                      <AlertCircle size={12} />
-                                      <span>{stats.open + stats.inProgress}</span>
-                                    </div>
-                                  );
-                                }
-                                return null;
-                              })()}
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 text-gray-400 text-[10px]">
-                            {sub.responsavelNome || (sub.responsibleId ? users.find(u => u.id === sub.responsibleId)?.name : '')}
-                          </td>
-                          <td className="px-4 py-4">
-                            <div className="flex flex-col gap-1 text-[11px] text-gray-400">
-                              <div className="flex items-center gap-1">
-                                <Calendar size={10} className="text-[#F97316] shrink-0" />
-                                <InlineDateInput value={sub.startDate || ''} onUpdate={(val) => handleDateUpdate(sub.id, 'startDate', val)} />
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <Calendar size={10} className="text-blue-400 shrink-0" />
-                                <InlineDateInput value={sub.endDate || ''} onUpdate={(val) => handleDateUpdate(sub.id, 'endDate', val)} />
-                              </div>
-                            </div>
-                          </td>
-                          <td className="px-4 py-4 text-gray-400 text-[10px]">
-                            {(() => {
-                              const deps = sub.dependsOnIds || (sub.dependsOnId ? [sub.dependsOnId] : []);
-                              if (deps.length === 0) return 'Nenhuma';
-                              return deps.map(id => {
-                                const dep = scheduleItems.find(s => s.id === id);
-                                return dep ? dep.title : 'Desconhecido';
-                              }).join(', ');
-                            })()}
-                          </td>
-                          <td className="px-4 py-4">
-                            <span className={`text-xs font-bold uppercase tracking-wider ${getComplexityColor(sub.complexity)}`}>
-                              {sub.complexity}
-                            </span>
-                          </td>
-                          <td className="px-4 py-4 text-gray-400 text-sm font-mono">{sub.weight}</td>
-                          <td className="px-4 py-4">
-                            <span className="text-sm text-emerald-400/80 font-mono font-medium">
-                              {sub.realWeight?.toFixed(2)}%
-                            </span>
-                          </td>
-                          <td className="px-6 py-4">
-                            <div className="space-y-2.5">
-                              <div className="flex items-center gap-3">
-                                <div className="flex-1 bg-[#0B0E14] h-3 rounded-full overflow-hidden min-w-[120px] shadow-inner">
-                                  <div className={`h-full ${getProgressColor(sub.progress)} transition-all duration-500 rounded-full`} style={{ width: `${sub.progress}%` }}></div>
-                                </div>
-                                <span className="text-xs text-gray-300 font-bold w-10 text-right">{sub.progress}%</span>
-                              </div>
-                              <QuickProgress current={sub.progress} onUpdate={(val) => handleQuickProgress(sub.id, val)} />
-                            </div>
-                          </td>
-                          <td className="px-6 py-3 text-right">
-                            <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button 
-                                onClick={() => handleCreatePendency(sub)}
-                                className="p-1.5 text-gray-500 hover:text-amber-500 transition-colors"
-                                title="Criar Pendência"
-                              >
-                                <AlertCircle size={14} />
-                              </button>
-                              <button 
-                                onClick={() => handleOpenModal(sub)}
-                                className="p-1.5 text-gray-500 hover:text-[#F97316] transition-colors"
-                              >
-                                <Edit2 size={14} />
-                              </button>
-                              <button 
-                                onClick={() => handleDelete(sub.id)}
-                                className="p-1.5 text-gray-500 hover:text-red-500 transition-colors"
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </React.Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="text-center py-20 bg-[#161B22] rounded-2xl border border-dashed border-white/10">
-          <p className="text-gray-500">Selecione uma obra para visualizar o cronograma.</p>
-        </div>
-      )}
-
-      <Modal 
-        isOpen={isModalOpen} 
-        onClose={() => setIsModalOpen(false)} 
-        title={editingItem ? 'Editar Etapa' : (formData.parentStepId ? 'Nova Subetapa' : 'Nova Etapa Principal')}
-      >
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="space-y-2">
-            <label className="text-sm text-gray-400 font-semibold">Título *</label>
-            <input 
-              required
-              type="text" 
-              placeholder="Ex: Infraestrutura Elétrica"
-              value={formData.title || ''}
-              onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-              className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316] transition-colors"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400 font-semibold">Tipo de Responsável *</label>
-              <div className="flex bg-[#0B0E14] rounded-lg p-1 border border-white/10">
-                <button
-                  type="button"
-                  onClick={() => setFormData({ ...formData, responsavelTipo: 'usuario' })}
-                  className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
-                    formData.responsavelTipo === 'usuario' 
-                      ? 'bg-[#161B22] text-white shadow' 
-                      : 'text-gray-500 hover:text-gray-300'
-                  }`}
-                >
-                  Usuário do Sistema
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFormData({ ...formData, responsavelTipo: 'manual' })}
-                  className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
-                    formData.responsavelTipo === 'manual' 
-                      ? 'bg-[#161B22] text-white shadow' 
-                      : 'text-gray-500 hover:text-gray-300'
-                  }`}
-                >
-                  Nome Manual
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400 font-semibold">Responsável *</label>
-              {formData.responsavelTipo === 'usuario' ? (
-                <select 
-                  required
-                  value={formData.responsavelUserId || ''}
-                  onChange={(e) => setFormData({ ...formData, responsavelUserId: e.target.value })}
-                  className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316] transition-colors"
-                >
-                  <option value="">Selecione o responsável</option>
-                  {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-                </select>
-              ) : (
+          <SummaryPanel data={{
+            totalDays: (
+              <div className="flex items-center gap-2">
                 <input 
-                  required
-                  type="text" 
-                  placeholder="Ex: Equipe Elétrica"
-                  value={formData.responsavelNome || ''}
-                  onChange={(e) => setFormData({ ...formData, responsavelNome: e.target.value })}
-                  className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316] transition-colors"
+                  type="number"
+                  value={project?.totalDays || 0}
+                  onChange={(e) => handleUpdateProjectField('totalDays', parseInt(e.target.value) || 0)}
+                  className="bg-white/5 w-20 text-xl font-black text-white outline-none border border-white/10 rounded px-2 focus:border-[#F97316] transition-all"
                 />
+                <span className="text-xs text-gray-500 font-bold uppercase">Dias</span>
+              </div>
+            ),
+            startDate: (
+              <InlineDateInput 
+                value={project?.startDate || ''}
+                className="text-xl font-black text-white"
+                onUpdate={async (date) => {
+                  await handleUpdateProjectField('startDate', date);
+                }}
+              />
+            ),
+            expectedDate: (
+              <InlineDateInput 
+                value={project?.endDate || ''}
+                className="text-xl font-black text-white"
+                onUpdate={async (date) => {
+                  if (project?.startDate) {
+                    const newTotalDays = getDaysBetween(project.startDate, date);
+                    await handleUpdateProjectField('totalDays', newTotalDays);
+                  }
+                }}
+              />
+            ),
+            status: projectStatus.label,
+            progress: overallProgress,
+            totalWeights: totalWeights
+          }} />
+
+          {/* Filters Bar */}
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => setShowFilters(!showFilters)}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border transition-all shadow-lg ${showFilters ? 'bg-[#F97316] border-[#F97316] text-white' : 'bg-[#161B22] border-white/10 text-gray-400 hover:bg-white/5'}`}
+              >
+                <Filter size={18} />
+                <span className="text-xs font-black uppercase tracking-widest">Filtrar Cronograma</span>
+              </button>
+              
+              {showFilters && (
+                <button 
+                  onClick={() => setFilters({ status: '', responsible: '', search: '' })}
+                  className="text-[10px] font-bold text-gray-500 hover:text-white uppercase tracking-wider underline underline-offset-4"
+                >
+                  Limpar Filtros
+                </button>
               )}
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          {showFilters && (
+            <div className="bg-[#161B22] p-6 rounded-2xl border border-white/10 mb-8 grid grid-cols-1 md:grid-cols-3 gap-6 animate-in fade-in slide-in-from-top-4 shadow-2xl">
+              <div className="space-y-2">
+                <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Status da Atividade</label>
+                <select 
+                  value={filters.status}
+                  onChange={(e) => setFilters({...filters, status: e.target.value})}
+                  className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#F97316] transition-all"
+                >
+                  <option value="">Todos os Status</option>
+                  <option value="pendente">Pendente</option>
+                  <option value="em_andamento">Em Andamento</option>
+                  <option value="concluido">Concluído</option>
+                  <option value="atrasado">Atrasado</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Responsável Técnico</label>
+                <select 
+                  value={filters.responsible}
+                  onChange={(e) => setFilters({...filters, responsible: e.target.value})}
+                  className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#F97316] transition-all"
+                >
+                  <option value="">Todos os Responsáveis</option>
+                  {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Busca Rápida</label>
+                <div className="relative">
+                  <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" />
+                  <input 
+                    type="text"
+                    placeholder="Nome da etapa ou subetapa..."
+                    value={filters.search}
+                    onChange={(e) => setFilters({...filters, search: e.target.value})}
+                    className="w-full bg-[#0B0E14] border border-white/10 rounded-xl pl-12 pr-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#F97316] transition-all"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-[minmax(320px,2.2fr)_minmax(140px,0.9fr)_minmax(200px,1fr)_minmax(120px,0.7fr)_minmax(80px,0.5fr)] gap-[12px] px-5 py-3 text-[10px] font-black text-gray-500 uppercase tracking-[0.2em] border-b border-white/5 mb-4">
+            <div className="text-left">Etapa / Subetapa</div>
+            <div className="text-left">Período</div>
+            <div className="text-center">Progresso</div>
+            <div className="text-center">Status</div>
+            <div className="text-right">Ações</div>
+          </div>
+
+          <div className="space-y-2">
+            {projectSteps?.length > 0 ? (
+              projectSteps.map(step => (
+                <StageBlock 
+                  key={step.id} 
+                  stage={step} 
+                  subStages={step.subSteps} 
+                  onEdit={() => handleOpenModal(step)} 
+                  onDelete={() => {
+                    if (confirm('Deseja realmente excluir esta etapa? Todas as subetapas vinculadas serão removidas permanentemente.')) {
+                      deleteScheduleItem(step.id);
+                    }
+                  }} 
+                  onAddSubStage={() => handleOpenModal(undefined, step.id)}
+                  onEditSubStage={(sub) => handleOpenModal(sub)}
+                  onDeleteSubStage={(subId) => {
+                    if (confirm('Deseja excluir esta subetapa?')) {
+                      deleteScheduleItem(subId);
+                    }
+                  }}
+                  onUpdateSubStageProgress={handleUpdateSubStageProgress}
+                />
+              ))
+            ) : (
+              <div className="text-center py-32 bg-[#161B22] rounded-3xl border border-dashed border-white/10 shadow-inner">
+                <div className="bg-white/5 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Layout size={32} className="text-gray-600" />
+                </div>
+                <p className="text-gray-400 font-medium">Nenhuma etapa encontrada para os filtros aplicados.</p>
+                <button 
+                  onClick={() => setFilters({ status: '', responsible: '', search: '' })}
+                  className="mt-4 text-xs font-bold text-[#F97316] uppercase tracking-widest hover:underline"
+                >
+                  Limpar todos os filtros
+                </button>
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="text-center py-40 bg-[#161B22] rounded-3xl border border-dashed border-white/10 shadow-inner">
+          <div className="bg-white/5 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
+            <Search size={40} className="text-gray-700" />
+          </div>
+          <h2 className="text-xl font-bold text-gray-300 mb-2">Cronograma não selecionado</h2>
+          <p className="text-gray-500 max-w-xs mx-auto">Selecione uma obra no topo da tela para gerenciar o cronograma executivo.</p>
+        </div>
+      )}
+
+      {/* Add/Edit Modal */}
+      <Modal 
+        isOpen={isModalOpen} 
+        onClose={() => setIsModalOpen(false)} 
+        title={editingItem ? 'Editar Item do Cronograma' : (parentStepId ? 'Nova Subetapa' : 'Nova Etapa Principal')}
+      >
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-2">
+            <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Título da Atividade</label>
+            <input 
+              required
+              type="text"
+              value={formData.title}
+              onChange={(e) => setFormData({...formData, title: e.target.value})}
+              className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
+              placeholder="Ex: Infraestrutura Elétrica do Mezanino"
+            />
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-2">
-              <label className="text-sm text-gray-400 font-semibold">Status *</label>
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Ambiente / Frente</label>
+              <input 
+                type="text"
+                value={formData.workFront}
+                onChange={(e) => setFormData({...formData, workFront: e.target.value})}
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
+                placeholder="Ex: Cozinha, Teto, Área Técnica..."
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Responsável</label>
               <select 
-                required
-                value={formData.status || 'pendente'}
-                onChange={(e) => setFormData({ ...formData, status: e.target.value as any })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316] transition-colors"
+                value={formData.responsibleId}
+                onChange={(e) => setFormData({...formData, responsibleId: e.target.value})}
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
+              >
+                <option value="">Nenhum Responsável</option>
+                {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+            <div className="space-y-2">
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Peso (%)</label>
+              <input 
+                type="number"
+                value={formData.weight}
+                onChange={(e) => setFormData({...formData, weight: parseInt(e.target.value) || 0})}
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Progresso (%)</label>
+              <input 
+                type="number"
+                min="0"
+                max="100"
+                value={formData.progress}
+                disabled={!editingItem ? !parentStepId : !editingItem.parentStepId}
+                onChange={(e) => setFormData({...formData, progress: parseInt(e.target.value) || 0})}
+                className={`w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all ${(!editingItem ? !parentStepId : !editingItem.parentStepId) ? 'opacity-50 cursor-not-allowed' : ''}`}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Complexidade</label>
+              <select 
+                value={formData.complexity}
+                onChange={(e) => setFormData({...formData, complexity: e.target.value as Complexity})}
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
+              >
+                <option value="baixa">Baixa</option>
+                <option value="media">Média</option>
+                <option value="alta">Alta</option>
+              </select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Status</label>
+              <select 
+                value={formData.status}
+                onChange={(e) => setFormData({...formData, status: e.target.value as any})}
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
               >
                 <option value="pendente">Pendente</option>
                 <option value="em_andamento">Em Andamento</option>
@@ -810,287 +611,88 @@ export default function CronogramaPage() {
                 <option value="atrasado">Atrasado</option>
               </select>
             </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-2">
-              <label className="text-sm text-gray-400 font-semibold">Frente de Trabalho *</label>
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Dependência (Interferência)</label>
               <select 
-                required
-                value={formData.workFront || 'Outros'}
-                onChange={(e) => setFormData({ ...formData, workFront: e.target.value as any })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316] transition-colors"
+                value={formData.liberatingActivityId}
+                onChange={(e) => setFormData({...formData, liberatingActivityId: e.target.value})}
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
               >
-                <option value="Civil">Civil</option>
-                <option value="Elétrica">Elétrica</option>
-                <option value="Gesso">Gesso</option>
-                <option value="Hidráulica">Hidráulica</option>
-                <option value="Outros">Outros</option>
+                <option value="">Nenhuma Dependência</option>
+                {dependencyOptions.map(group => (
+                  <optgroup key={group.stage} label={group.stage} className="bg-[#161B22] text-[#F97316] font-bold">
+                    {group.items.map(i => (
+                      <option key={i.id} value={i.id} className="text-white font-normal">
+                        {i.parentStepId ? '↳ ' : ''}{i.workFront ? `[${i.workFront}] ` : ''}{i.title}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Tipo de Vínculo</label>
+              <select 
+                value={formData.linkType}
+                onChange={(e) => setFormData({...formData, linkType: e.target.value as any})}
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
+              >
+                <option value="FS">Término-Início (FS)</option>
+                <option value="SS">Início-Início (SS)</option>
               </select>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="flex items-center gap-3 bg-white/5 p-4 rounded-xl border border-white/10">
+            <input 
+              type="checkbox"
+              id="dateLockedManual"
+              checked={formData.dateLockedManual}
+              onChange={(e) => setFormData({...formData, dateLockedManual: e.target.checked})}
+              className="w-5 h-5 rounded border-white/10 bg-[#0B0E14] text-[#F97316] focus:ring-0 focus:ring-offset-0"
+            />
+            <label htmlFor="dateLockedManual" className="text-sm font-bold text-gray-300 cursor-pointer">
+              Travar Datas Manualmente (Ignorar automação para este item)
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-6">
             <div className="space-y-2">
-              <label className="text-sm text-gray-400 font-semibold">Data Início *</label>
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Data Início</label>
               <input 
-                required
-                type="date" 
-                value={formData.startDate ? formData.startDate.split('T')[0] : ''}
-                onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316] transition-colors"
+                type="date"
+                value={formData.startDate}
+                onChange={(e) => setFormData({...formData, startDate: e.target.value})}
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm text-gray-400 font-semibold">Data Fim *</label>
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Data Fim</label>
               <input 
-                required
-                type="date" 
-                value={formData.endDate ? formData.endDate.split('T')[0] : ''}
-                onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316] transition-colors"
+                type="date"
+                value={formData.endDate}
+                onChange={(e) => setFormData({...formData, endDate: e.target.value})}
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
               />
             </div>
           </div>
 
-          <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <input 
-                type="checkbox"
-                id="followScheduleOrder"
-                checked={formData.followScheduleOrder || false}
-                onChange={(e) => setFormData({ ...formData, followScheduleOrder: e.target.checked })}
-                className="w-4 h-4 rounded border-white/10 bg-[#0B0E14] text-[#F97316] focus:ring-[#F97316]"
-              />
-              <label htmlFor="followScheduleOrder" className="text-sm text-gray-300 font-semibold cursor-pointer">
-                Seguir ordem do cronograma (depende do item anterior)
-              </label>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400 font-semibold">Depende de (Múltiplos)</label>
-              <div className="space-y-2">
-                <input 
-                  type="text"
-                  placeholder="Buscar atividade..."
-                  className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-[#F97316]"
-                  value={dependencySearchTerm}
-                  onChange={(e) => setDependencySearchTerm(e.target.value)}
-                />
-                <div className="max-h-40 overflow-y-auto border border-white/5 rounded-lg bg-[#0B0E14]/50 p-2 space-y-1">
-                  {allProjectItemsOrdered
-                    .filter(item => 
-                      item.id !== editingItem?.id && 
-                      item.title.toLowerCase().includes(dependencySearchTerm.toLowerCase())
-                    )
-                    .map(item => {
-                      const isSelected = (formData.dependsOnIds || []).includes(item.id);
-                      const parent = item.parentStepId ? scheduleItems.find(s => s.id === item.parentStepId) : null;
-                      
-                      return (
-                        <div 
-                          key={item.id}
-                          onClick={() => {
-                            const current = formData.dependsOnIds || [];
-                            const next = isSelected 
-                              ? current.filter(id => id !== item.id)
-                              : [...current, item.id];
-                            setFormData({ ...formData, dependsOnIds: next });
-                          }}
-                          className={`flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
-                            isSelected ? 'bg-[#F97316]/20 border border-[#F97316]/30' : 'hover:bg-white/5 border border-transparent'
-                          }`}
-                        >
-                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${
-                            isSelected ? 'bg-[#F97316] border-[#F97316]' : 'border-white/20'
-                          }`}>
-                            {isSelected && <Plus size={12} className="text-white" />}
-                          </div>
-                          <div className="flex flex-col">
-                            <span className={`text-xs ${isSelected ? 'text-white font-bold' : 'text-gray-300'}`}>
-                              {item.title}
-                            </span>
-                            {parent && (
-                              <span className="text-[10px] text-gray-500 italic">
-                                Etapa: {parent.title}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })
-                  }
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400 font-semibold">Progresso (%) *</label>
-              <input 
-                required
-                type="number" 
-                min="0"
-                max="100"
-                value={formData.progress || 0}
-                onChange={(e) => setFormData({ ...formData, progress: Number(e.target.value) })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316] transition-colors"
-              />
-            </div>
-            {!formData.parentStepId ? (
-              <div className="space-y-2">
-                <label className="text-sm text-gray-400 font-semibold">Peso da Etapa no Total (%) *</label>
-                <input 
-                  required
-                  type="number" 
-                  min="1"
-                  max="100"
-                  value={formData.weight || 1}
-                  onChange={(e) => setFormData({ ...formData, weight: Number(e.target.value) })}
-                  className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316] transition-colors"
-                />
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <label className="text-sm text-gray-400 font-semibold">Complexidade *</label>
-                <select 
-                  required
-                  value={formData.complexity || 'media'}
-                  onChange={(e) => {
-                    const complexity = e.target.value as Complexity;
-                    const weight = complexity === 'alta' ? 3 : (complexity === 'media' ? 2 : 1);
-                    setFormData({ ...formData, complexity, weight });
-                  }}
-                  className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316] transition-colors"
-                >
-                  <option value="baixa">Baixa (Peso 1)</option>
-                  <option value="media">Média (Peso 2)</option>
-                  <option value="alta">Alta (Peso 3)</option>
-                </select>
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center justify-end gap-3 pt-4">
+          <div className="flex items-center justify-end gap-4 pt-6 border-t border-white/5">
             <button 
               type="button"
               onClick={() => setIsModalOpen(false)}
-              className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+              className="px-6 py-3 text-sm font-bold text-gray-500 hover:text-white transition-all uppercase tracking-widest"
             >
               Cancelar
             </button>
             <button 
               type="submit"
-              className="bg-[#F97316] hover:bg-[#EA580C] text-white px-6 py-2 rounded-lg font-bold transition-colors shadow-lg shadow-orange-500/20"
+              className="px-10 py-3 bg-[#F97316] text-white rounded-xl font-black uppercase tracking-widest hover:bg-[#F97316]/90 transition-all shadow-xl shadow-orange-500/20"
             >
-              {editingItem ? 'Atualizar Etapa' : 'Salvar Etapa'}
-            </button>
-          </div>
-        </form>
-      </Modal>
-
-      <ConfirmModal
-        isOpen={!!itemToDelete}
-        onClose={() => setItemToDelete(null)}
-        onConfirm={confirmDelete}
-        title="Excluir Etapa"
-        message="Tem certeza que deseja excluir esta etapa? Esta ação não pode ser desfeita."
-      />
-
-      <Modal 
-        isOpen={isPendencyModalOpen} 
-        onClose={() => setIsPendencyModalOpen(false)} 
-        title="Nova Pendência do Cronograma"
-      >
-        <form onSubmit={handlePendencySubmit} className="space-y-6">
-          <div className="space-y-2">
-            <label className="text-sm text-gray-400">Título da Pendência *</label>
-            <input 
-              required
-              type="text" 
-              value={pendencyFormData.title || ''}
-              onChange={(e) => setPendencyFormData({ ...pendencyFormData, title: e.target.value })}
-              className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
-            />
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-sm text-gray-400">Descrição</label>
-            <textarea 
-              rows={3}
-              value={pendencyFormData.description || ''}
-              onChange={(e) => setPendencyFormData({ ...pendencyFormData, description: e.target.value })}
-              className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Responsável *</label>
-              <select 
-                required
-                value={pendencyFormData.responsibleId || ''}
-                onChange={(e) => setPendencyFormData({ ...pendencyFormData, responsibleId: e.target.value })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
-              >
-                <option value="">Selecione o responsável</option>
-                {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-              </select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Prioridade *</label>
-              <select 
-                required
-                value={pendencyFormData.priority || 'media'}
-                onChange={(e) => setPendencyFormData({ ...pendencyFormData, priority: e.target.value as any })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
-              >
-                <option value="baixa">Baixa</option>
-                <option value="media">Média</option>
-                <option value="alta">Alta</option>
-                <option value="critica">Crítica</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Prazo *</label>
-              <input 
-                required
-                type="date" 
-                value={pendencyFormData.deadline || ''}
-                onChange={(e) => setPendencyFormData({ ...pendencyFormData, deadline: e.target.value })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Status *</label>
-              <select 
-                required
-                value={pendencyFormData.status || 'aberta'}
-                onChange={(e) => setPendencyFormData({ ...pendencyFormData, status: e.target.value as any })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
-              >
-                <option value="aberta">Aberta</option>
-                <option value="em_andamento">Em Andamento</option>
-                <option value="resolvida">Resolvida</option>
-                <option value="cancelada">Cancelada</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-end gap-3 pt-4">
-            <button 
-              type="button"
-              onClick={() => setIsPendencyModalOpen(false)}
-              className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
-            >
-              Cancelar
-            </button>
-            <button 
-              type="submit"
-              className="bg-[#F97316] hover:bg-[#EA580C] text-white px-6 py-2 rounded-lg font-bold transition-colors shadow-lg shadow-orange-500/20"
-            >
-              Criar Pendência
+              {editingItem ? 'Salvar Alterações' : 'Criar Atividade'}
             </button>
           </div>
         </form>

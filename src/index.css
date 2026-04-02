@@ -15,3 +15,32 @@ body {
   color: var(--color-text-primary);
   font-family: var(--font-sans);
 }
+
+/* Custom Scrollbar for Cronograma Table */
+.cronograma-scrollbar::-webkit-scrollbar {
+  height: 10px;
+}
+
+.cronograma-scrollbar::-webkit-scrollbar-track {
+  background: #0B0E14;
+  border-radius: 5px;
+}
+
+.cronograma-scrollbar::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 5px;
+  border: 2px solid #0B0E14;
+}
+
+.cronograma-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

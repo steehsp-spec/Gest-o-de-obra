@@ -42,9 +42,13 @@ export default function CadastroObrasPage() {
     phone: '',
     address: '',
     city: '',
+    startDate: '',
+    endDate: '',
+    totalDays: undefined,
     managerId: '',
     budget: 0,
     status: 'planejamento',
+    progress: 0,
     description: '',
     tipoCronograma: 'em_branco',
     estruturaCronograma: []
@@ -53,7 +57,7 @@ export default function CadastroObrasPage() {
   const handleOpenModal = (project?: Project) => {
     if (project) {
       setEditingProject(project);
-      setFormData({ ...project });
+      setFormData({ ...project } as any);
       setProjectType(project.tipoCronograma || 'em_branco');
       
       const savedTemplate = projectTemplates.find(t => t.id === (project.tipoCronograma || 'em_branco'));
@@ -86,13 +90,15 @@ export default function CadastroObrasPage() {
         phone: '',
         address: '',
         city: '',
+        startDate: '',
+        endDate: '',
         managerId: '',
         budget: 0,
         status: 'planejamento',
         description: '',
         tipoCronograma: 'em_branco',
         estruturaCronograma: []
-      });
+      } as any);
     }
     setIsModalOpen(true);
   };
@@ -111,7 +117,7 @@ export default function CadastroObrasPage() {
     try {
       const dataToSave = {
         ...formData,
-        tipoCronograma: projectType,
+        tipoCronograma: projectType as any,
         estruturaCronograma: templateData,
         updatedAt: new Date().toISOString()
       };
@@ -139,7 +145,7 @@ export default function CadastroObrasPage() {
         
         const managerInfo = {
           responsibleId: formData.managerId || '',
-          responsavelTipo: formData.managerId ? 'usuario' : 'manual' as const,
+          responsavelTipo: (formData.managerId ? 'usuario' : 'manual') as 'usuario' | 'manual',
           responsavelUserId: formData.managerId || '',
           responsavelNome: formData.managerId ? (users.find(u => u.id === formData.managerId)?.name || '') : '',
         };
@@ -189,7 +195,7 @@ export default function CadastroObrasPage() {
                 templateStepId: step.id,
                 ordem: step.ordem
               });
-            } else {
+            } else if (mainStepItem) {
               // Atualizar se mudou algo (título, peso ou campos globais)
               const needsUpdate = 
                 mainStepItem.title !== step.title || 
@@ -234,14 +240,14 @@ export default function CadastroObrasPage() {
                       ...managerInfo,
                       templateStepId: step.id,
                       templateSubStepId: sub.id,
-                      ordem: sub.ordem
+                      ordem: sub.ordem || 0
                     }));
                   } else {
                     // Atualizar se mudou algo (título, complexidade ou campos globais)
                     const needsUpdate = 
                       existingSubItem.title !== sub.title || 
                       existingSubItem.complexity !== complexity ||
-                      existingSubItem.ordem !== sub.ordem ||
+                      existingSubItem.ordem !== (sub.ordem || 0) ||
                       managerChanged;
 
                     if (needsUpdate) {
@@ -249,7 +255,7 @@ export default function CadastroObrasPage() {
                         title: sub.title,
                         complexity: complexity,
                         weight: weight,
-                        ordem: sub.ordem,
+                        ordem: sub.ordem || 0,
                         ...globalUpdates
                       }));
                     }
@@ -282,7 +288,7 @@ export default function CadastroObrasPage() {
         // Recalcular tudo após as mudanças estruturais
         setSyncStatus('Recalculando progresso...');
         setTimeout(() => {
-          recalculateAll();
+          recalculateAll(projectId);
           setSyncStatus('');
         }, 1000);
         alert('Obra salva e estrutura sincronizada com o cronograma com sucesso!');
@@ -536,17 +542,19 @@ export default function CadastroObrasPage() {
   );
 
   const getStatusBadge = (status: ProjectStatus) => {
-    const styles = {
+    const styles: Record<ProjectStatus, string> = {
       planejamento: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
       em_execucao: 'bg-[#F97316]/10 text-[#F97316] border-[#F97316]/20',
       paralizada: 'bg-red-500/10 text-red-500 border-red-500/20',
-      concluida: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+      concluida: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
+      atrasada: 'bg-red-500/10 text-red-500 border-red-500/20'
     };
-    const labels = {
+    const labels: Record<ProjectStatus, string> = {
       planejamento: 'Planejamento',
       em_execucao: 'Em Execução',
       paralizada: 'Paralizada',
-      concluida: 'Concluída'
+      concluida: 'Concluída',
+      atrasada: 'Atrasada'
     };
     return (
       <span className={`px-2 py-1 rounded-full text-xs font-medium border ${styles[status]}`}>
@@ -556,15 +564,15 @@ export default function CadastroObrasPage() {
   };
 
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-8">
+    <div className="p-4 lg:p-8 max-w-7xl mx-auto">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-white">Cadastro de Obras</h1>
-          <p className="text-gray-400 text-sm">Gerencie todas as obras da A&R Engenharia</p>
+          <h1 className="text-xl lg:text-2xl font-bold text-white">Cadastro de Obras</h1>
+          <p className="text-gray-400 text-xs lg:text-sm">Gerencie todas as obras da A&R Engenharia</p>
         </div>
         <button 
           onClick={() => handleOpenModal()}
-          className="bg-[#F97316] hover:bg-[#EA580C] text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors font-semibold"
+          className="bg-[#F97316] hover:bg-[#EA580C] text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 transition-colors font-semibold text-sm lg:text-base"
         >
           <Plus size={20} />
           Nova Obra
@@ -572,20 +580,81 @@ export default function CadastroObrasPage() {
       </div>
 
       <div className="bg-[#161B22] rounded-2xl border border-white/10 overflow-hidden">
-        <div className="p-6 border-b border-white/10 flex items-center justify-between gap-4">
+        <div className="p-4 lg:p-6 border-b border-white/10 flex items-center justify-between gap-4">
           <div className="relative flex-1 max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 lg:w-[18px] lg:h-[18px]" size={16} />
             <input 
               type="text" 
               placeholder="Buscar por nome, código ou cliente..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-[#0B0E14] border border-white/10 rounded-lg pl-10 pr-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-[#F97316]"
+              className="w-full bg-[#0B0E14] border border-white/10 rounded-lg pl-10 pr-4 py-2 text-white text-xs lg:text-sm placeholder-gray-500 focus:outline-none focus:border-[#F97316]"
             />
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* Mobile View for Projects */}
+        <div className="lg:hidden divide-y divide-white/5">
+          {filteredProjects.map((project) => (
+            <div key={project.id} className="p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-bold text-white text-base">{project.name}</h3>
+                  <span className="text-gray-500 text-[10px] uppercase tracking-wider">{project.code}</span>
+                </div>
+                {getStatusBadge(project.status)}
+              </div>
+              
+              <div className="grid grid-cols-2 gap-y-2 text-xs">
+                <div className="flex flex-col">
+                  <span className="text-gray-500 uppercase font-bold text-[9px]">Cliente</span>
+                  <span className="text-gray-300 truncate">{project.client}</span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-gray-500 uppercase font-bold text-[9px]">Responsável</span>
+                  <span className="text-gray-300 truncate">
+                    {users.find(u => u.id === project.managerId)?.name || 'Não atribuído'}
+                  </span>
+                </div>
+                <div className="flex flex-col col-span-2">
+                  <span className="text-gray-500 uppercase font-bold text-[9px]">Orçamento</span>
+                  <span className="text-gray-300">
+                    {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(project.budget)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2 border-t border-white/5">
+                <button className="p-2 text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
+                  <Eye size={16} />
+                  <span className="text-[10px] font-bold uppercase">Ver</span>
+                </button>
+                <button 
+                  onClick={() => handleOpenModal(project)}
+                  className="p-2 text-gray-400 hover:text-[#F97316] transition-colors flex items-center gap-1.5"
+                >
+                  <Edit2 size={16} />
+                  <span className="text-[10px] font-bold uppercase">Editar</span>
+                </button>
+                <button 
+                  onClick={() => handleDelete(project.id)}
+                  className="p-2 text-gray-400 hover:text-red-500 transition-colors flex items-center gap-1.5"
+                >
+                  <Trash2 size={16} />
+                  <span className="text-[10px] font-bold uppercase">Excluir</span>
+                </button>
+              </div>
+            </div>
+          ))}
+          {filteredProjects.length === 0 && (
+            <div className="p-8 text-center text-gray-500 text-sm">
+              Nenhuma obra encontrada.
+            </div>
+          )}
+        </div>
+
+        {/* Desktop Table View */}
+        <div className="hidden lg:block overflow-x-auto">
           <table className="w-full text-left">
             <thead>
               <tr className="bg-[#0B0E14] text-gray-400 text-xs uppercase tracking-wider">
@@ -647,80 +716,80 @@ export default function CadastroObrasPage() {
         onClose={() => setIsModalOpen(false)} 
         title={editingProject ? 'Editar Obra' : 'Nova Obra'}
       >
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Nome da Obra *</label>
+        <form onSubmit={handleSubmit} className="space-y-4 lg:space-y-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-xs lg:text-sm text-gray-400">Nome da Obra *</label>
               <input 
                 required
                 type="text" 
                 value={formData.name || ''}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
               />
             </div>
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Código *</label>
+            <div className="space-y-1.5">
+              <label className="text-xs lg:text-sm text-gray-400">Código *</label>
               <input 
                 required
                 type="text" 
                 value={formData.code || ''}
                 onChange={(e) => setFormData({ ...formData, code: e.target.value })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Cliente *</label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-xs lg:text-sm text-gray-400">Cliente *</label>
               <input 
                 required
                 type="text" 
                 value={formData.client || ''}
                 onChange={(e) => setFormData({ ...formData, client: e.target.value })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
               />
             </div>
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Telefone</label>
+            <div className="space-y-1.5">
+              <label className="text-xs lg:text-sm text-gray-400">Telefone</label>
               <input 
                 type="text" 
                 value={formData.phone || ''}
                 onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Endereço</label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-xs lg:text-sm text-gray-400">Endereço</label>
               <input 
                 type="text" 
                 value={formData.address || ''}
                 onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
               />
             </div>
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Cidade</label>
+            <div className="space-y-1.5">
+              <label className="text-xs lg:text-sm text-gray-400">Cidade</label>
               <input 
                 type="text" 
                 value={formData.city || ''}
                 onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Responsável Técnico</label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-xs lg:text-sm text-gray-400">Responsável Técnico</label>
               <select 
                 value={formData.managerId || ''}
                 onChange={(e) => setFormData({ ...formData, managerId: e.target.value })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
               >
                 <option value="">Selecione um responsável</option>
                 {users.filter(u => u.role === 'engenheiro' || u.role === 'administrador').map(u => (
@@ -728,23 +797,36 @@ export default function CadastroObrasPage() {
                 ))}
               </select>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm text-gray-400">Orçamento Previsto</label>
-              <input 
-                type="number" 
-                value={formData.budget || 0}
-                onChange={(e) => setFormData({ ...formData, budget: Number(e.target.value) })}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
-              />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs lg:text-sm text-gray-400">Prazo Total (dias)</label>
+                <input 
+                  type="number" 
+                  min="1"
+                  value={formData.totalDays || ''}
+                  onChange={(e) => setFormData({ ...formData, totalDays: e.target.value ? Number(e.target.value) : null as any })}
+                  className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
+                  placeholder="Ex: 35"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs lg:text-sm text-gray-400">Orçamento Previsto</label>
+                <input 
+                  type="number" 
+                  value={formData.budget || 0}
+                  onChange={(e) => setFormData({ ...formData, budget: Number(e.target.value) })}
+                  className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
+                />
+              </div>
             </div>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm text-gray-400">Status</label>
+          <div className="space-y-1.5">
+            <label className="text-xs lg:text-sm text-gray-400">Status</label>
             <select 
                 value={formData.status || 'planejamento'}
               onChange={(e) => setFormData({ ...formData, status: e.target.value as ProjectStatus })}
-              className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
+              className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
             >
               <option value="planejamento">Planejamento</option>
               <option value="em_execucao">Em Execução</option>
@@ -753,20 +835,20 @@ export default function CadastroObrasPage() {
             </select>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm text-gray-400">Descrição</label>
+          <div className="space-y-1.5">
+            <label className="text-xs lg:text-sm text-gray-400">Descrição</label>
             <textarea 
               rows={3}
               value={formData.description || ''}
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
+              className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
             />
           </div>
 
           <div className="space-y-4 pt-4 border-t border-white/10">
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <label className="text-sm text-gray-400 font-semibold">Tipo da Obra (Modelo de Cronograma)</label>
+                  <label className="text-xs lg:text-sm text-gray-400 font-semibold">Tipo da Obra (Modelo de Cronograma)</label>
                   {currentUser?.role === 'administrador' && (
                     <Link 
                       to="/modelos-obra" 
@@ -781,7 +863,7 @@ export default function CadastroObrasPage() {
                 <select 
                   value={projectType}
                   onChange={(e) => handleProjectTypeChange(e.target.value as any)}
-                  className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-3 text-white focus:outline-none focus:border-[#F97316]"
+                  className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
                 >
                   {projectTemplates.length > 0 ? (
                     projectTemplates.map(t => (
@@ -1178,13 +1260,14 @@ export default function CadastroObrasPage() {
                   weight: step.weight || 10,
                   complexity: 'media',
                   status: 'pendente',
-                  startDate: formData.startDate || new Date().toISOString().split('T')[0],
-                  endDate: formData.endDate || new Date().toISOString().split('T')[0],
+                  startDate: formData.startDate || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`,
+                  endDate: formData.endDate || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`,
                   responsibleId: formData.managerId || '',
                   responsavelTipo: formData.managerId ? 'usuario' : 'manual',
                   responsavelUserId: formData.managerId || '',
                   responsavelNome: formData.managerId ? (users.find(u => u.id === formData.managerId)?.name || '') : '',
-                  templateStepId: step.id
+                  templateStepId: step.id,
+                  ordem: step.ordem
                 });
 
                 if (mainStepId) {
@@ -1205,14 +1288,15 @@ export default function CadastroObrasPage() {
                         weight: weight,
                         complexity: complexity,
                         status: 'pendente',
-                        startDate: formData.startDate || new Date().toISOString().split('T')[0],
-                        endDate: formData.endDate || new Date().toISOString().split('T')[0],
+                        startDate: formData.startDate || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`,
+                        endDate: formData.endDate || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`,
                         responsibleId: formData.managerId || '',
                         responsavelTipo: formData.managerId ? 'usuario' : 'manual',
                         responsavelUserId: formData.managerId || '',
                         responsavelNome: formData.managerId ? (users.find(u => u.id === formData.managerId)?.name || '') : '',
                         templateStepId: step.id,
-                        templateSubStepId: sub.id
+                        templateSubStepId: sub.id,
+                        ordem: sub.ordem || 0
                       });
                     }
                   }

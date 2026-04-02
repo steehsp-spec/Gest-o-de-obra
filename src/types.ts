@@ -2,7 +2,7 @@ export type UserRole = 'administrador' | 'engenheiro' | 'encarregado' | 'finance
 
 export interface User {
   id: string; // This will be the Firebase UID
-  uid: string; // Redundant but good for clarity as requested
+  uid?: string; // Redundant but good for clarity as requested
   name: string;
   email: string;
   phone: string;
@@ -13,7 +13,7 @@ export interface User {
   updatedAt?: string;
 }
 
-export type ProjectStatus = 'planejamento' | 'em_execucao' | 'paralizada' | 'concluida';
+export type ProjectStatus = 'planejamento' | 'em_execucao' | 'paralizada' | 'concluida' | 'atrasada';
 
 export interface Project {
   id: string;
@@ -25,6 +25,7 @@ export interface Project {
   city: string;
   startDate: string;
   endDate: string;
+  totalDays?: number;
   managerId: string; // User ID
   budget: number;
   status: ProjectStatus;
@@ -32,6 +33,7 @@ export interface Project {
   tipoCronograma?: 'em_branco' | 'obra_completa' | 'obra_parcial' | 'manutencao';
   estruturaCronograma?: TemplateStep[];
   progress: number;
+  location?: string;
   updatedAt?: string;
   createdAt?: string;
 }
@@ -39,7 +41,7 @@ export interface Project {
 export interface ProjectTemplate {
   id: string;
   name: string;
-  type: 'obra_completa' | 'obra_parcial' | 'manutencao' | 'em_branco';
+  type: 'obra_completa' | 'obra_parcial' | 'manutencao' | 'em_branco' | 'personalizado';
   structure: TemplateStep[];
   updatedAt?: string;
 }
@@ -88,6 +90,8 @@ export interface ScheduleItem {
   templateSubStepId?: string; // Link to TemplateSubStep.id
   title: string;
   ordem: number;
+  ordem_etapa?: number;
+  ordem_subitem?: number;
   responsibleId?: string; // Mantido para compatibilidade
   responsavelTipo?: 'usuario' | 'manual';
   responsavelUserId?: string;
@@ -98,11 +102,24 @@ export interface ScheduleItem {
   weight: number; // For main steps: % of project (0-100). For sub-steps: complexity weight (1, 2, 3)
   complexity?: Complexity; // Only for sub-steps
   realWeight?: number; // Calculated: weight in the total project (0-100)
-  status: 'pendente' | 'em_andamento' | 'concluido' | 'atrasado';
+  status: 'pendente' | 'em_andamento' | 'em_processo' | 'revisao' | 'finalizando' | 'concluido' | 'atrasado';
   dependsOnId?: string; // ID of another ScheduleItem in the same project (deprecated, use dependsOnIds)
   dependsOnIds?: string[]; // Multiple dependencies
   followScheduleOrder?: boolean; // If true, depends on the previous item in the list
-  workFront?: 'Civil' | 'Elétrica' | 'Gesso' | 'Hidráulica' | 'Outros';
+  workFront?: string;
+  startDateManual?: boolean;
+  endDateManual?: boolean;
+  baseDurationDays?: number;
+  liberatingActivityId?: string;
+  linkType?: 'FS' | 'SS'; // FS: Finish-to-Start, SS: Start-to-Start
+  dateLockedManual?: boolean;
+  activityType?: string;
+  durationManual?: number;
+  durationManualEnabled?: boolean;
+  manualStartDate?: string;
+  manualEndDate?: string;
+  manualDays?: number;
+  manualProgress?: number;
 }
 
 export type TransactionType = 'entrada' | 'saida';
@@ -122,7 +139,7 @@ export interface Transaction {
 export interface TemplateSubStep {
   id: string;
   title: string;
-  ordem: number;
+  ordem?: number;
 }
 
 export interface TemplateStep {

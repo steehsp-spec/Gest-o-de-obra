@@ -22,11 +22,12 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { auth, db } from '../firebase';
-import { User, Project, Pendency, Activity, ScheduleItem, Transaction, Settings, ProjectTemplate } from '../types';
+import { User, Project, Pendency, Activity, ScheduleItem, Transaction, Settings, ProjectTemplate, Complexity } from '../types';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { OBRA_COMPLETA_TEMPLATE, OBRA_PARCIAL_TEMPLATE, OBRA_MANUTENCAO_TEMPLATE } from '../utils/projectTemplates';
+import { parseDateStr, addDays, getDaysBetween } from '../utils/dateUtils';
 
 interface DataContextType {
   users: User[];
@@ -69,6 +70,24 @@ interface DataContextType {
   addScheduleItem: (item: Omit<ScheduleItem, 'id'>) => Promise<string>;
   updateScheduleItem: (id: string, item: Partial<ScheduleItem>) => Promise<void>;
   deleteScheduleItem: (id: string) => Promise<void>;
+  batchUpdateScheduleItems: (items: { id: string, updates: Partial<ScheduleItem> }[]) => Promise<void>;
+  generateAutomaticSchedule: (projectId: string, startDate: string) => Promise<void>;
+  generateScheduleByDuration: (
+    projectId: string,
+    startDate: string,
+    totalDays: number,
+    complexity: Complexity,
+    weights: {
+      demolicao: number;
+      civil: number;
+      eletrica: number;
+      hidraulica: number;
+      gesso: number;
+      exaustao: number;
+      incendio: number;
+      acabamento: number;
+    }
+  ) => Promise<ScheduleItem[]>;
   
   addTransaction: (transaction: Omit<Transaction, 'id'>) => Promise<void>;
   updateTransaction: (id: string, transaction: Partial<Transaction>) => Promise<void>;
@@ -76,6 +95,8 @@ interface DataContextType {
 
   updateSettings: (settings: Partial<Settings>) => Promise<void>;
   migrateToFirestore: () => Promise<void>;
+  recalculateAll: (projectId?: string, stageId?: string) => Promise<void>;
+  clearAllData: () => Promise<void>;
   
   // Backup & Restore
   exportBackup: () => Promise<void>;
@@ -88,9 +109,8 @@ interface DataContextType {
   loading: boolean;
   error: string | null;
   login: (email: string, password: string) => Promise<boolean>;
+  register: (email: string, password: string, name: string) => Promise<boolean>;
   logout: () => Promise<void>;
-  recalculateAll: () => Promise<void>;
-  clearAllData: () => Promise<void>;
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
@@ -108,6 +128,131 @@ const initialSettings: Settings = {
   notificationsEnabled: true,
   theme: 'dark',
   language: 'pt-BR'
+};
+
+export const BASE_DURATIONS: Record<string, number> = {
+  // DEMOLIÇÃO
+  'demolicao_simples': 2,
+  'demolicao_forro': 2,
+  'demolicao_parede': 3,
+  
+  // CONTRA PISO / AZULEJO / ALVENARIA
+  'elevacao_alvenaria': 3,
+  'assentamento_ceramica': 2,
+  'assentamento_pastilhas': 2,
+  'rejunte': 1,
+  'granito': 2,
+  'cantoneira': 1,
+  'preparacao_parede': 2,
+  
+  // GESSO / PAREDE / FORRO
+  'gesso_base': 2,
+  'fechamento_parede': 2,
+  'fechamento_forro': 2,
+  
+  // HIDRÁULICA
+  'hidraulica_base': 2,
+  'hidraulica_revisao': 1,
+  'hidraulica_tubulacao': 2,
+  'hidraulica_instalacao_final': 2,
+  
+  // EXAUSTÃO / VENTILAÇÃO / AR-CONDICIONADO
+  'coifa': 3,
+  'grelhas': 2,
+  
+  // SISTEMA DE COMBATE AO INCÊNDIO
+  'incendio_revisao': 1,
+  'incendio_instalacao': 2,
+  'incendio_testes': 1,
+  
+  // ELÉTRICA
+  'eletrica_infra': 2,
+  'eletrica_cabeamento': 2,
+  'eletrica_rabicho': 1,
+  'eletrica_iluminacao': 2,
+  'eletrica_instalacao': 2,
+  'eletrica_quadro': 2,
+  'eletrica_testes': 1,
+  
+  // ACABAMENTO
+  'acabamento_preparacao': 2,
+  'acabamento_pintura': 3,
+  'acabamento_final': 2,
+  
+  'outros': 1,
+};
+
+export const DEFAULT_STAGE_WEIGHTS: Record<string, number> = {
+  'demolicao': 5,
+  'civil': 30,
+  'eletrica': 15,
+  'hidraulica': 15,
+  'gesso': 10,
+  'exaustao': 5,
+  'incendio': 5,
+  'acabamento': 15
+};
+
+export const COMPLEXITY_MULTIPLIERS: Record<string, number> = {
+  baixa: 1.0,
+  media: 2.0,
+  alta: 3.0,
+};
+
+const getSequenceScore = (stageId: string, weight: number, itemCount?: number) => {
+  const baseScores: Record<string, number> = {
+    'demolicao': 10,
+    'civil': 20,
+    'hidraulica': 30,
+    'exaustao': 40,
+    'incendio': 50,
+    'gesso': 60,
+    'eletrica': 70,
+    'acabamento': 80
+  };
+
+  let score = baseScores[stageId] || 99;
+
+  // Rule: Exaustão vs Elétrica (Interference)
+  if (stageId === 'exaustao') {
+    // If Exaustão is small (low weight or few items), it can move after Elétrica
+    if (weight < 5 || (itemCount !== undefined && itemCount < 3)) {
+      score = 75; // After Elétrica (70)
+    }
+  }
+
+  if (stageId === 'eletrica') {
+    // If Elétrica is large (high impact), it can start earlier
+    if (weight > 15 || (itemCount !== undefined && itemCount > 10)) {
+      score = 35; // Move before Exaustão/Incendio
+    }
+  }
+
+  // Rule: Hidráulica (Impact)
+  if (stageId === 'hidraulica') {
+    // If Hidráulica is very large, it's high impact, keep it early or move even earlier
+    if (weight > 20 || (itemCount !== undefined && itemCount > 15)) {
+      score = 15; // Move before Civil (20)
+    }
+    // If Hidráulica is small, it can move after Exaustão
+    if (weight < 5 || (itemCount !== undefined && itemCount < 3)) {
+      score = 45; 
+    }
+  }
+
+  // Rule: Gesso (Dependencies)
+  if (stageId === 'gesso') {
+    // If Gesso is small, it can move later (closer to finishing)
+    if (weight < 5 || (itemCount !== undefined && itemCount < 3)) {
+      score = 78; // Just before Acabamento (80)
+    }
+    // If Gesso is large, it might need to start earlier (but still after heavy infra)
+    if (weight > 15 || (itemCount !== undefined && itemCount > 10)) {
+      score = 55; // Move before original gesso 60
+    }
+  }
+
+  return score;
 };
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
@@ -583,7 +728,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           name: firebaseUser.displayName || email.split('@')[0] || 'Novo Usuário',
           email: email,
           phone: '',
-          role: email === 'alessandro.aerengenharia2@gmail.com' ? 'administrador' : 'encarregado',
+          role: email === 'steeh.sp@gmail.com' || email === 'alessandro.aerengenharia2@gmail.com' ? 'administrador' : 'encarregado',
           status: 'ativo',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
@@ -614,10 +759,56 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         setError('Senha incorreta.');
       } else if (err.code === 'auth/invalid-credential') {
         setError('E-mail ou senha incorretos.');
+      } else if (err.code === 'auth/network-request-failed') {
+        setError('Erro de conexão com o Firebase. Isso pode ocorrer em apps "Remixados" que precisam de uma nova configuração de backend. Por favor, clique no botão de configuração do Firebase se disponível ou verifique sua internet.');
       } else if (err.code === 'permission-denied') {
         setError('Erro de permissão ao acessar o perfil no banco de dados.');
       } else {
         setError('Erro ao autenticar. Verifique sua conexão e tente novamente.');
+      }
+      return false;
+    }
+  };
+
+  const register = async (email: string, password: string, name: string) => {
+    setError(null);
+    setLoading(true);
+    try {
+      console.log('Iniciando registro para:', email);
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const firebaseUser = userCredential.user;
+      console.log('Usuário criado no Firebase Auth com UID:', firebaseUser.uid);
+
+      const newProfile: User = {
+        id: firebaseUser.uid,
+        uid: firebaseUser.uid,
+        name: name || email.split('@')[0],
+        email: email,
+        phone: '',
+        role: email === 'steeh.sp@gmail.com' || email === 'alessandro.aerengenharia2@gmail.com' ? 'administrador' : 'encarregado',
+        status: 'ativo',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      console.log('Criando perfil no Firestore...');
+      await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
+      console.log('Perfil criado com sucesso.');
+      
+      setCurrentUser(newProfile);
+      setLoading(false);
+      return true;
+    } catch (err: any) {
+      console.error('Erro no registro:', err);
+      setLoading(false);
+      if (err.code === 'auth/email-already-in-use') {
+        setError('Este e-mail já está em uso.');
+      } else if (err.code === 'auth/weak-password') {
+        setError('A senha é muito fraca.');
+      } else if (err.code === 'auth/network-request-failed') {
+        setError('Erro de conexão com o Firebase. Verifique sua internet.');
+      } else {
+        setError('Erro ao criar conta. Tente novamente.');
       }
       return false;
     }
@@ -629,151 +820,543 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Helper to recalculate weights, progress and dates
-  const recalculateSchedule = (items: ScheduleItem[]) => {
-    const updatedItems = [...items];
-    const projectIds = Array.from(new Set(updatedItems.map(i => i.projectId)));
+  const calculateDuration = (item: ScheduleItem, totalDays?: number) => {
+    // 1. Se a duração manual estiver habilitada (pelo usuário), usa ela
+    if (item.durationManualEnabled && item.durationManual !== undefined) {
+      return Math.max(1, item.durationManual);
+    }
+    
+    // 1. Se tiver duração manual habilitada, usa ela
+    if (item.durationManualEnabled) {
+      if (item.manualDays !== undefined) return Math.max(1, item.manualDays);
+      if (item.durationManual !== undefined) return Math.max(1, item.durationManual);
+    }
+    
+    // 2. Se tiver dias manuais definidos (legado), usa eles
+    if (item.manualDays !== undefined) {
+      return Math.max(1, item.manualDays);
+    }
 
-    projectIds.forEach(projectId => {
-      const projectItems = updatedItems.filter(i => i.projectId === projectId);
-      const mainSteps = projectItems.filter(i => !i.parentStepId);
+    // 3. Se tiver duração automática calculada pela distribuição coletiva, usa ela
+    if (item.durationManual !== undefined) {
+      return Math.max(1, item.durationManual);
+    }
 
-      // We need to process items in an order that respects dependencies
-      // For simplicity, we'll do multiple passes or a topological sort
-      // Let's do a few passes to propagate dates through dependencies
-      for (let pass = 0; pass < 3; pass++) {
-        mainSteps.forEach(mainStep => {
-          const subSteps = projectItems.filter(i => i.parentStepId === mainStep.id);
-          
-          // Process main step dates first if it has dependencies
-          const mainStepDeps = mainStep.dependsOnIds || (mainStep.dependsOnId ? [mainStep.dependsOnId] : []);
-          if (mainStepDeps.length > 0) {
-            let maxEndDate: Date | null = null;
-            mainStepDeps.forEach(depId => {
-              const dep = updatedItems.find(i => i.id === depId);
-              if (dep && dep.endDate) {
-                const depEnd = new Date(dep.endDate);
-                if (!maxEndDate || depEnd > maxEndDate) maxEndDate = depEnd;
-              }
-            });
-            if (maxEndDate) {
-              const newStart = maxEndDate.toISOString().split('T')[0];
-              const mainIndex = updatedItems.findIndex(i => i.id === mainStep.id);
-              if (mainIndex !== -1 && updatedItems[mainIndex].startDate !== newStart) {
-                // Update startDate and shift endDate to maintain duration
-                const oldStart = updatedItems[mainIndex].startDate ? new Date(updatedItems[mainIndex].startDate!) : null;
-                const oldEnd = updatedItems[mainIndex].endDate ? new Date(updatedItems[mainIndex].endDate!) : null;
-                updatedItems[mainIndex] = { ...updatedItems[mainIndex], startDate: newStart };
-                if (oldStart && oldEnd) {
-                  const duration = oldEnd.getTime() - oldStart.getTime();
-                  const newEnd = new Date(maxEndDate.getTime() + duration).toISOString().split('T')[0];
-                  updatedItems[mainIndex].endDate = newEnd;
-                }
-              }
-            }
-          }
+    // 4. Fallback: Se tiver peso real e prazo total, calcula proporcionalmente
+    // O peso real já deve considerar a complexidade e o peso da etapa
+    if (totalDays && item.realWeight && item.realWeight > 0) {
+      const duration = (totalDays * (item.realWeight / 100));
+      return Math.max(1, Math.ceil(duration));
+    }
+    
+    const base = item.baseDurationDays || (item.activityType ? BASE_DURATIONS[item.activityType] : 0) || 1;
+    const multiplier = item.complexity === 'baixa' ? 1 : (item.complexity === 'alta' ? 3 : 2);
+    return Math.ceil(base * (multiplier / 2));
+  };
 
-          if (subSteps.length > 0) {
-            // Soma dos pesos de complexidade (1, 2, 3)
-            const totalComplexityWeight = subSteps.reduce((acc, sub) => acc + (sub.weight || 1), 0);
-            let weightedProgressSum = 0;
-            
-            subSteps.forEach(sub => {
-              const subIndex = updatedItems.findIndex(i => i.id === sub.id);
-              if (subIndex === -1) return;
+  const isLeapYear = (year: number) => (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+  const daysInMonth = (year: number, month: number) => {
+    return [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  };
 
-              // 1. Recalcular Peso Real
-              const complexityWeight = sub.weight || 1;
-              const realWeight = (mainStep.weight || 0) * (complexityWeight / (totalComplexityWeight || 1));
-              updatedItems[subIndex] = { 
-                ...updatedItems[subIndex], 
-                realWeight: Number(realWeight.toFixed(2))
-              };
-              
-              // 2. Recalcular Datas baseadas em dependências
-              const subDeps = sub.dependsOnIds || (sub.dependsOnId ? [sub.dependsOnId] : []);
-              if (subDeps.length > 0) {
-                let maxEndDate: Date | null = null;
-                subDeps.forEach(depId => {
-                  const dep = updatedItems.find(i => i.id === depId);
-                  if (dep && dep.endDate) {
-                    const depEnd = new Date(dep.endDate);
-                    if (!maxEndDate || depEnd > maxEndDate) maxEndDate = depEnd;
-                  }
-                });
-                if (maxEndDate) {
-                  const newStart = maxEndDate.toISOString().split('T')[0];
-                  if (updatedItems[subIndex].startDate !== newStart) {
-                    const oldStart = updatedItems[subIndex].startDate ? new Date(updatedItems[subIndex].startDate!) : null;
-                    const oldEnd = updatedItems[subIndex].endDate ? new Date(updatedItems[subIndex].endDate!) : null;
-                    updatedItems[subIndex].startDate = newStart;
-                    if (oldStart && oldEnd) {
-                      const duration = oldEnd.getTime() - oldStart.getTime();
-                      const newEnd = new Date(maxEndDate.getTime() + duration).toISOString().split('T')[0];
-                      updatedItems[subIndex].endDate = newEnd;
-                    } else if (mainStep.endDate) {
-                      // Se não tinha data, usa a data da etapa como fallback para o fim
-                      updatedItems[subIndex].endDate = mainStep.endDate;
-                    }
-                  }
-                }
-              } else {
-                // Sem dependência: usar data da etapa
-                if (mainStep.startDate && updatedItems[subIndex].startDate !== mainStep.startDate) {
-                  const oldStart = updatedItems[subIndex].startDate ? new Date(updatedItems[subIndex].startDate!) : null;
-                  const oldEnd = updatedItems[subIndex].endDate ? new Date(updatedItems[subIndex].endDate!) : null;
-                  updatedItems[subIndex].startDate = mainStep.startDate;
-                  if (oldStart && oldEnd) {
-                    const duration = oldEnd.getTime() - oldStart.getTime();
-                    const newEnd = new Date(new Date(mainStep.startDate).getTime() + duration).toISOString().split('T')[0];
-                    updatedItems[subIndex].endDate = newEnd;
-                  } else if (mainStep.endDate) {
-                    updatedItems[subIndex].endDate = mainStep.endDate;
-                  }
-                }
-              }
+  const addDays = (dateStr: string, days: number): string => {
+    if (!dateStr || dateStr === 'undefined' || dateStr === 'null') return '';
+    const parts = dateStr.split('-');
+    if (parts.length !== 3) return dateStr;
+    
+    let y = parseInt(parts[0], 10);
+    let m = parseInt(parts[1], 10);
+    let d = parseInt(parts[2], 10);
+    
+    if (isNaN(y) || isNaN(m) || isNaN(d)) return '';
 
-              weightedProgressSum += (sub.progress * (complexityWeight / (totalComplexityWeight || 1)));
-            });
+    d += days;
+    
+    while (d > daysInMonth(y, m)) {
+      d -= daysInMonth(y, m);
+      m++;
+      if (m > 12) {
+        m = 1;
+        y++;
+      }
+    }
+    
+    while (d <= 0) {
+      m--;
+      if (m < 1) {
+        m = 12;
+        y--;
+      }
+      d += daysInMonth(y, m);
+    }
+    
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${y}-${pad(m)}-${pad(d)}`;
+  };
 
-            const mainIndex = updatedItems.findIndex(i => i.id === mainStep.id);
-            const progress = Math.round(weightedProgressSum);
-            if (mainIndex !== -1) {
-              updatedItems[mainIndex] = { 
-                ...updatedItems[mainIndex], 
-                progress,
-                realWeight: mainStep.weight || 0,
-                status: progress === 100 ? 'concluido' : (progress > 0 ? 'em_andamento' : 'pendente')
-              };
-            }
-          } else {
-            // Etapa principal sem subetapas
-            const mainIndex = updatedItems.findIndex(i => i.id === mainStep.id);
-            if (mainIndex !== -1) {
-              updatedItems[mainIndex] = { 
-                ...updatedItems[mainIndex], 
-                realWeight: mainStep.weight || 0,
-                status: mainStep.progress === 100 ? 'concluido' : (mainStep.progress > 0 ? 'em_andamento' : 'pendente')
-              };
-            }
+  const compareDates = (date1: string | null | undefined, date2: string | null | undefined): number => {
+    if (!date1 && !date2) return 0;
+    if (!date1) return -1;
+    if (!date2) return 1;
+    return date1.localeCompare(date2);
+  };
+
+  const recalculateSchedule = (items: ScheduleItem[], projectId?: string, stageId?: string, updatedProject?: Project, forceFullRecalculate?: boolean) => {
+    // Create a deep-ish copy to avoid mutating the original state objects
+    const updatedItems = items.map(item => ({ ...item }));
+    const projectIds = projectId ? [projectId] : Array.from(new Set(updatedItems.map(i => i.projectId)));
+
+    const parseDateStr = (dateStr: string | undefined | null): string | null => {
+      if (!dateStr || typeof dateStr !== 'string' || dateStr === 'undefined' || dateStr === 'null') return null;
+      return dateStr;
+    };
+
+    projectIds.forEach(pId => {
+      const project = (updatedProject && updatedProject.id === pId) ? updatedProject : projects.find(p => p.id === pId);
+      if (!project) return;
+      
+      const totalDays = project.totalDays || 0;
+      const projectItems = updatedItems.filter(i => i.projectId === pId);
+      const mainSteps = projectItems.filter(i => !i.parentStepId).sort((a, b) => a.ordem - b.ordem);
+
+      // Se for um recálculo forçado (mudança no projeto), resetamos apenas as travas de data, mas mantemos as durações manuais se possível
+      if (forceFullRecalculate) {
+        console.log(`[Recalculate] Resetando travas de data para o projeto ${pId} devido a recálculo forçado.`);
+        projectItems.forEach(item => {
+          const itemIndex = updatedItems.findIndex(i => i.id === item.id);
+          if (itemIndex !== -1) {
+            // Mantemos durationManualEnabled para respeitar a vontade do usuário de fixar um prazo
+            updatedItems[itemIndex].startDateManual = false;
+            updatedItems[itemIndex].endDateManual = false;
+            updatedItems[itemIndex].dateLockedManual = false;
+            updatedItems[itemIndex].manualStartDate = undefined;
+            updatedItems[itemIndex].manualEndDate = undefined;
+            // manualDays e durationManual são mantidos se durationManualEnabled for true
           }
         });
       }
-    });
+
+      // 0. Recalcular pesos e durações automáticas
+      
+      // 0.1. Distribuir dias entre etapas principais (se não houver stageId específico)
+      if (!stageId && totalDays > 0) {
+        // Identificar etapas com duração manual e subtrair do total
+        const manualMainSteps = mainSteps.filter(s => s.durationManualEnabled && s.durationManual !== undefined);
+        
+        // "Aprender" com os dados manuais: atualizar pesos baseados na proporção real
+        manualMainSteps.forEach(step => {
+          const itemIndex = updatedItems.findIndex(i => i.id === step.id);
+          if (itemIndex !== -1) {
+            // Nenhuma etapa pode ultrapassar o total da obra
+            if ((updatedItems[itemIndex].durationManual || 0) > totalDays) {
+              updatedItems[itemIndex].durationManual = totalDays;
+            }
+            // Atualizar peso para refletir a proporção manual
+            const newWeight = ((updatedItems[itemIndex].durationManual || 0) / totalDays) * 100;
+            updatedItems[itemIndex].weight = Number(newWeight.toFixed(2));
+          }
+        });
+
+        const manualDays = manualMainSteps.reduce((acc, s) => acc + (s.durationManual || 0), 0);
+        const remainingDays = Math.max(0, totalDays - manualDays);
+        const autoMainSteps = mainSteps.filter(s => !s.durationManualEnabled);
+        const totalAutoWeight = autoMainSteps.reduce((acc, s) => acc + (s.weight || 0), 0);
+
+        if (totalAutoWeight > 0) {
+          let allocatedAutoDays = 0;
+          autoMainSteps.forEach((step, idx) => {
+            const itemIndex = updatedItems.findIndex(i => i.id === step.id);
+            if (itemIndex === -1) return;
+            
+            let duration = 0;
+            if (idx === autoMainSteps.length - 1) {
+              duration = Math.max(1, remainingDays - allocatedAutoDays);
+            } else {
+              duration = Math.max(1, Math.round(remainingDays * (step.weight / totalAutoWeight)));
+            }
+            allocatedAutoDays += duration;
+            updatedItems[itemIndex].durationManual = duration;
+          });
+        }
+      }
+
+      // 0.2. Calcular pesos reais das subetapas
+      mainSteps.forEach(mainStep => {
+        // Garantir que a etapa principal tenha seu realWeight (que é o seu próprio peso %)
+        const mainStepIndex = updatedItems.findIndex(i => i.id === mainStep.id);
+        if (mainStepIndex !== -1) {
+          // Se o peso for 0 ou indefinido, tenta buscar um peso padrão baseado no título
+          if (!updatedItems[mainStepIndex].weight || updatedItems[mainStepIndex].weight === 0) {
+            const title = updatedItems[mainStepIndex].title.toLowerCase();
+            let defaultWeight = 10; // Default fallback
+            for (const [key, value] of Object.entries(DEFAULT_STAGE_WEIGHTS)) {
+              if (title.includes(key)) {
+                defaultWeight = value;
+                break;
+              }
+            }
+            updatedItems[mainStepIndex].weight = defaultWeight;
+          }
+          updatedItems[mainStepIndex].realWeight = updatedItems[mainStepIndex].weight || 0;
+        }
+
+        const subSteps = projectItems.filter(i => i.parentStepId === mainStep.id).sort((a, b) => a.ordem - b.ordem);
+        if (subSteps.length > 0) {
+          const totalComplexityWeight = subSteps.reduce((acc, sub) => acc + (sub.weight || 1), 0);
+          
+          subSteps.forEach(sub => {
+            const subIndex = updatedItems.findIndex(i => i.id === sub.id);
+            if (subIndex !== -1) {
+              const complexityWeight = sub.weight || 1;
+              const parentWeight = updatedItems[mainStepIndex].weight || 0;
+              const realWeight = parentWeight * (complexityWeight / (totalComplexityWeight || 1));
+              updatedItems[subIndex].realWeight = Number(realWeight.toFixed(2));
+            }
+          });
+        }
+      });
+
+      // 0.3. Distribuir dias entre subetapas dentro de cada etapa
+      mainSteps.forEach(mainStep => {
+        const subSteps = projectItems.filter(i => i.parentStepId === mainStep.id).sort((a, b) => a.ordem - b.ordem);
+        if (subSteps.length > 0) {
+          const mainIndex = updatedItems.findIndex(i => i.id === mainStep.id);
+          const stageDuration = updatedItems[mainIndex].durationManual || 1;
+          
+          // Identificar subetapas com duração manual e subtrair da duração da etapa
+          const manualSubSteps = subSteps.filter(s => s.durationManualEnabled && s.durationManual !== undefined);
+          
+          // "Aprender" com os dados manuais das subetapas
+          manualSubSteps.forEach(sub => {
+            const subIndex = updatedItems.findIndex(i => i.id === sub.id);
+            if (subIndex !== -1) {
+              // Garantir que subetapas manuais não ultrapassem a etapa
+              if ((updatedItems[subIndex].durationManual || 0) > stageDuration) {
+                updatedItems[subIndex].durationManual = stageDuration;
+              }
+              // Atualizar peso relativo da subetapa dentro da etapa pai
+              const newSubWeight = ((updatedItems[subIndex].durationManual || 0) / stageDuration) * (mainStep.weight || 10);
+              updatedItems[subIndex].weight = Number(newSubWeight.toFixed(2));
+            }
+          });
+
+          const manualSubDays = manualSubSteps.reduce((acc, s) => acc + (s.durationManual || 0), 0);
+          const remainingSubDays = Math.max(0, stageDuration - manualSubDays);
+          const autoSubSteps = subSteps.filter(s => !s.durationManualEnabled);
+          
+          const subStepDurationWeights = autoSubSteps.map(sub => {
+            // Distribuímos a duração da etapa proporcionalmente ao realWeight
+            return (sub.realWeight || 0);
+          });
+          
+          const totalSubDurationWeight = subStepDurationWeights.reduce((a, b) => a + b, 0);
+          
+          if (totalSubDurationWeight > 0) {
+            let allocatedSubDays = 0;
+            autoSubSteps.forEach((sub, idx) => {
+              const subIndex = updatedItems.findIndex(i => i.id === sub.id);
+              if (subIndex === -1) return;
+              
+              let duration = 0;
+              if (idx === autoSubSteps.length - 1) {
+                duration = Math.max(1, remainingSubDays - allocatedSubDays);
+              } else {
+                duration = Math.max(1, Math.round(remainingSubDays * (subStepDurationWeights[idx] / totalSubDurationWeight)));
+              }
+              allocatedSubDays += duration;
+              updatedItems[subIndex].durationManual = duration;
+            });
+          } else if (autoSubSteps.length > 0) {
+            // Fallback se não houver pesos: divide igualmente
+            let allocatedSubDays = 0;
+            autoSubSteps.forEach((sub, idx) => {
+              const subIndex = updatedItems.findIndex(i => i.id === sub.id);
+              if (subIndex === -1) return;
+              
+              let duration = 0;
+              if (idx === autoSubSteps.length - 1) {
+                duration = Math.max(1, remainingSubDays - allocatedSubDays);
+              } else {
+                duration = Math.max(1, Math.floor(remainingSubDays / autoSubSteps.length));
+              }
+              allocatedSubDays += duration;
+              updatedItems[subIndex].durationManual = duration;
+            });
+          }
+        }
+      });
+
+      // 1. Recalcular durações e propagar datas (5 passagens para garantir propagação)
+      // Ordenar projectItems para facilitar a propagação sequencial
+      const sortedProjectItems = [...projectItems].sort((a, b) => {
+        if (!a.parentStepId && b.parentStepId) return -1;
+        if (a.parentStepId && !b.parentStepId) return 1;
+        if (a.parentStepId === b.parentStepId) return a.ordem - b.ordem;
+        return 0;
+      });
+
+      for (let pass = 0; pass < 10; pass++) {
+        sortedProjectItems.forEach(item => {
+          const itemIndex = updatedItems.findIndex(i => i.id === item.id);
+          // Se a data estiver travada manualmente, não recalcular datas para este item
+          if (item.dateLockedManual) {
+             // Ainda assim, garantir que as datas manuais sejam aplicadas se existirem
+             if (item.manualStartDate) updatedItems[itemIndex].startDate = item.manualStartDate;
+             if (item.manualEndDate) updatedItems[itemIndex].endDate = item.manualEndDate;
+             return;
+          }
+          
+          // Se stageId for fornecido, só recalcular se for a etapa ou subetapa dela
+          if (stageId && item.id !== stageId && item.parentStepId !== stageId) return;
+
+          if (itemIndex === -1) return;
+
+          let referenceDate: string | null = null;
+          let linkType: 'FS' | 'SS' = updatedItems[itemIndex].linkType || 'FS';
+          
+          // Verificar atividade liberadora (sistema inteligente)
+          const liberatorId = updatedItems[itemIndex].liberatingActivityId;
+          if (liberatorId) {
+            const liberator = updatedItems.find(i => i.id === liberatorId);
+            if (liberator) {
+              if (linkType === 'FS' && liberator.endDate) {
+                const d = parseDateStr(liberator.endDate);
+                if (d) {
+                  referenceDate = addDays(d, 1);
+                }
+              } else if (linkType === 'SS' && liberator.startDate) {
+                referenceDate = parseDateStr(liberator.startDate);
+              }
+            }
+          } else {
+            // Verificar dependências legadas (sempre FS)
+            const deps = updatedItems[itemIndex].dependsOnIds || (updatedItems[itemIndex].dependsOnId ? [updatedItems[itemIndex].dependsOnId] : []);
+            if (deps.length > 0) {
+              let maxEndDate: string | null = null;
+              deps.forEach(depId => {
+                const dep = updatedItems.find(i => i.id === depId);
+                if (dep && dep.endDate) {
+                  const depEnd = parseDateStr(dep.endDate);
+                  if (depEnd && (!maxEndDate || compareDates(depEnd, maxEndDate) > 0)) maxEndDate = depEnd;
+                }
+              });
+              if (maxEndDate) {
+                referenceDate = addDays(maxEndDate, 1);
+              }
+            } else if (updatedItems[itemIndex].parentStepId) {
+              // Lógica de Paralelismo por Frente de Trabalho (Ambiente)
+              const parentId = updatedItems[itemIndex].parentStepId;
+              const currentItem = updatedItems[itemIndex];
+              const siblings = projectItems
+                .filter(i => i.parentStepId === parentId)
+                .sort((a, b) => a.ordem - b.ordem);
+              
+              const myIdxInSiblings = siblings.findIndex(i => i.id === currentItem.id);
+              
+              if (myIdxInSiblings > 0) {
+                // Se houver frente de trabalho definida, só espera o anterior DA MESMA FRENTE
+                // Se não houver frente, mantém a sequência padrão dentro da etapa
+                const previousInSameFront = siblings
+                  .slice(0, myIdxInSiblings)
+                  .reverse()
+                  .find(s => !currentItem.workFront || !s.workFront || s.workFront === currentItem.workFront);
+
+                if (previousInSameFront) {
+                  const prev = updatedItems.find(i => i.id === previousInSameFront.id);
+                  if (prev && prev.endDate) {
+                    referenceDate = addDays(prev.endDate, 1);
+                  }
+                } else {
+                  // Se não houver predecessor na mesma frente, começa junto com o pai
+                  const parent = updatedItems.find(i => i.id === parentId);
+                  if (parent && parent.startDate) {
+                    referenceDate = parseDateStr(parent.startDate);
+                  }
+                }
+              } else {
+                // Primeiro subitem: herda do pai
+                const parent = updatedItems.find(i => i.id === parentId);
+                if (parent && parent.startDate) {
+                  referenceDate = parseDateStr(parent.startDate);
+                }
+              }
+            } else {
+              // Lógica de Paralelismo entre Etapas Principais
+              const sortedMainSteps = projectItems
+                .filter(i => !i.parentStepId)
+                .sort((a, b) => a.ordem - b.ordem);
+              
+              const currentItem = updatedItems[itemIndex];
+              const myIdxInMain = sortedMainSteps.findIndex(i => i.id === currentItem.id);
+              
+              if (myIdxInMain > 0) {
+                const previousStage = updatedItems.find(i => i.id === sortedMainSteps[myIdxInMain - 1].id);
+                
+                // Etapas que podem ser paralelas (Civil, Elétrica, Hidráulica, Gesso, Exaustão, Incêndio)
+                const parallelFriendlyStages = ['civil', 'elétrica', 'hidráulica', 'gesso', 'exaustão', 'incêndio'];
+                const isParallelFriendly = (title: string) => {
+                  const t = title.toLowerCase();
+                  return parallelFriendlyStages.some(s => t.includes(s));
+                };
+
+                const isDemolition = (title: string) => title.toLowerCase().includes('demolição');
+
+                if (isParallelFriendly(currentItem.title)) {
+                  // Se for uma etapa paralela, ela deve esperar apenas a Demolição (se houver)
+                  const demolitionStage = sortedMainSteps.find(s => isDemolition(s.title));
+                  if (demolitionStage && demolitionStage.endDate && currentItem.id !== demolitionStage.id) {
+                    referenceDate = addDays(demolitionStage.endDate, 1);
+                  } else if (project?.startDate) {
+                    // Se não houver demolição ou for a própria demolição, começa no início do projeto
+                    referenceDate = parseDateStr(project.startDate);
+                  }
+                } else if (previousStage && previousStage.endDate) {
+                  // Etapas não paralelas (como Acabamento ou Limpeza) esperam a anterior
+                  referenceDate = addDays(previousStage.endDate, 1);
+                }
+              } else {
+                // Primeira etapa: início do projeto
+                if (project?.startDate) {
+                  referenceDate = parseDateStr(project.startDate);
+                }
+              }
+            }
+          }
+
+          // --- Lógica de Dependências Implícitas (Conflitos Reais por Frente) ---
+          // Esta lógica adiciona restrições extras mesmo que não haja dependência explícita
+          const hasExplicitDeps = liberatorId || item.dependsOnId || (item.dependsOnIds && item.dependsOnIds.length > 0);
+          if (!hasExplicitDeps && item.workFront) {
+            const currentTitle = item.title.toLowerCase();
+            const currentFront = item.workFront;
+
+            // 1. Gesso/Forro espera Elétrica/Infra na mesma frente
+            if (currentTitle.includes('gesso') || currentTitle.includes('forro')) {
+              const blockingInfra = projectItems.find(i => 
+                i.workFront === currentFront && 
+                (i.title.toLowerCase().includes('elétrica') || i.title.toLowerCase().includes('infra')) &&
+                i.id !== item.id
+              );
+              if (blockingInfra && blockingInfra.endDate) {
+                const d = parseDateStr(blockingInfra.endDate);
+                if (d && (!referenceDate || compareDates(d, referenceDate) > 0)) {
+                  referenceDate = addDays(d, 1);
+                }
+              }
+            }
+
+            // 2. Acabamento/Pintura espera Infraestrutura na mesma frente
+            if (currentTitle.includes('acabamento') || currentTitle.includes('pintura')) {
+              const blockingInfra = projectItems.find(i => 
+                i.workFront === currentFront && 
+                (i.title.toLowerCase().includes('elétrica') || i.title.toLowerCase().includes('hidráulica') || i.title.toLowerCase().includes('gesso')) &&
+                i.id !== item.id
+              );
+              if (blockingInfra && blockingInfra.endDate) {
+                const d = parseDateStr(blockingInfra.endDate);
+                if (d && (!referenceDate || compareDates(d, referenceDate) > 0)) {
+                  referenceDate = addDays(d, 1);
+                }
+              }
+            }
+          }
+
+          if (updatedItems[itemIndex].manualStartDate) {
+            updatedItems[itemIndex].startDate = updatedItems[itemIndex].manualStartDate;
+          } else if (referenceDate && !updatedItems[itemIndex].startDateManual) {
+            const newStart = referenceDate;
+            if (updatedItems[itemIndex].startDate !== newStart) {
+              updatedItems[itemIndex].startDate = newStart;
+            }
+          }
+
+          // Calcular data final baseada na duração (se não for manual)
+          if (updatedItems[itemIndex].startDate) {
+            if (updatedItems[itemIndex].manualEndDate) {
+              updatedItems[itemIndex].endDate = updatedItems[itemIndex].manualEndDate;
+            } else if (!updatedItems[itemIndex].endDateManual) {
+              const duration = calculateDuration(updatedItems[itemIndex], totalDays);
+              const newEnd = addDays(updatedItems[itemIndex].startDate!, duration - 1);
+              if (updatedItems[itemIndex].endDate !== newEnd) {
+                updatedItems[itemIndex].endDate = newEnd;
+              }
+            }
+          }
+        });
+
+        // Atualizar datas, duração e progresso das etapas principais baseadas nas subetapas
+        mainSteps.forEach(mainStep => {
+          if (mainStep.dateLockedManual) return;
+          
+          const subSteps = projectItems.filter(i => i.parentStepId === mainStep.id);
+          if (subSteps.length > 0) {
+            let minStart: string | null = null;
+            let maxEnd: string | null = null;
+            
+            subSteps.forEach(sub => {
+              const currentSub = updatedItems.find(i => i.id === sub.id);
+              if (currentSub?.startDate) {
+                const s = parseDateStr(currentSub.startDate);
+                if (s && (!minStart || compareDates(s, minStart) < 0)) minStart = s;
+              }
+              if (currentSub?.endDate) {
+                const e = parseDateStr(currentSub.endDate);
+                if (e && (!maxEnd || compareDates(e, maxEnd) > 0)) maxEnd = e;
+              }
+            });
+            
+            const mainIndex = updatedItems.findIndex(i => i.id === mainStep.id);
+            if (mainIndex !== -1) {
+              const item = updatedItems[mainIndex];
+              
+              // 1. Atualizar Datas
+              if (minStart && !item.startDateManual) item.startDate = minStart;
+              if (maxEnd && !item.endDateManual) item.endDate = maxEnd;
+              
+              // 2. Calcular Duração Real (diferença entre menor data inicial e maior data final)
+              if (item.startDate && item.endDate) {
+                const duration = getDaysBetween(item.startDate, item.endDate) + 1;
+                item.durationManual = duration;
+                item.durationManualEnabled = true;
+              }
+
+              // 3. Calcular Progresso (Média ponderada)
+              const totalWeight = subSteps.reduce((acc, sub) => acc + (sub.realWeight || sub.weight || 1), 0);
+              const weightedProgress = subSteps.reduce((acc, sub) => {
+                const weight = sub.realWeight || sub.weight || 1;
+                const progress = sub.progress || 0;
+                return acc + (progress * (weight / (totalWeight || 1)));
+              }, 0);
+              
+              // Regra de bloqueio de 100%: só 100% se todas forem 100%
+              const allCompleted = subSteps.every(sub => (sub.progress || 0) === 100);
+              let finalProgress = Math.round(weightedProgress);
+              if (finalProgress === 100 && !allCompleted) {
+                finalProgress = 99;
+              }
+              
+              item.progress = finalProgress;
+              item.status = finalProgress === 100 ? 'concluido' : (finalProgress > 0 ? 'em_andamento' : 'pendente');
+            }
+          }
+        });
+        }
+      });
 
     return updatedItems;
   };
 
   // Initial recalculation if needed
-  useEffect(() => {
-    const recalculated = recalculateSchedule(scheduleItems);
-    if (JSON.stringify(recalculated) !== JSON.stringify(scheduleItems)) {
-      setScheduleItems(recalculated);
-    }
-  }, []);
+  // useEffect(() => {
+  //   const recalculated = recalculateSchedule(scheduleItems);
+  //   if (JSON.stringify(recalculated) !== JSON.stringify(scheduleItems)) {
+  //     setScheduleItems(recalculated);
+  //   }
+  // }, []);
 
 
   // CRUD Implementations
-  const generateId = () => Math.random().toString(36).substr(2, 9);
+  const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
 
   // Helper to remove undefined fields before sending to Firestore
   const cleanData = (data: any) => {
@@ -788,102 +1371,178 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Recalculate everything: schedule items, project progress, and dashboard
-  const recalculateTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
-  const recalculateAll = async () => {
+  const recalculateAll = async (projectId?: string, stageId?: string, updatedItem?: ScheduleItem, updatedProject?: Project, forceFullRecalculate?: boolean) => {
     if (!isFirestoreReady) return;
 
-    if (recalculateTimeoutRef.current) clearTimeout(recalculateTimeoutRef.current);
-    
-    recalculateTimeoutRef.current = setTimeout(async () => {
-      // Cleanup orphans
+    // Cleanup orphans periodicamente ou em recálculos totais
+    if (!projectId || forceFullRecalculate) {
       await cleanupOrphans();
+    }
 
-      try {
-        console.log('Iniciando recálculo total do sistema...');
+    try {
+      console.log(`[RecalculateAll] Iniciando recálculo... Projeto: ${projectId || 'Todos'} ${forceFullRecalculate ? '(FORÇADO)' : ''}`);
+      
+      // Use current scheduleItems, but include updatedItem if provided
+      const currentItems = updatedItem 
+        ? scheduleItems.map(item => item.id === updatedItem.id ? updatedItem : item)
+        : scheduleItems;
+
+      // 1. Recalcular Cronograma (Datas, Pesos e Progressos das Etapas Pai)
+      const updatedSchedule = recalculateSchedule(currentItems, projectId, stageId, updatedProject, forceFullRecalculate);
+      
+      // 2. Recalcular Progresso das Obras
+      const updatedProjects = projects.map(project => {
+        const p = (updatedProject && updatedProject.id === project.id) ? updatedProject : project;
         
-        // 1. Recalcular Cronograma (Pesos e Progressos das Etapas Pai)
-        const updatedSchedule = recalculateSchedule(scheduleItems);
+        // Se não for o projeto alvo do recálculo, retorna o original
+        if (projectId && p.id !== projectId) return p;
+
+        const projectItems = updatedSchedule.filter(item => item.projectId === p.id);
+        if (projectItems.length === 0) return p;
+
+        // O progresso da obra é a média ponderada das etapas principais (que não têm pai)
+        const mainSteps = projectItems.filter(item => !item.parentStepId);
+        if (mainSteps.length === 0) return p;
+
+        const totalWeight = mainSteps.reduce((acc, step) => acc + (step.realWeight || step.weight || 0), 0);
+        const weightedProgress = mainSteps.reduce((acc, step) => {
+          const weight = step.realWeight || step.weight || 0;
+          const progress = step.progress || 0;
+          return acc + (progress * (weight / (totalWeight || 1)));
+        }, 0);
+
+        // Regra de bloqueio de 100%: só 100% se todas as etapas principais forem 100%
+        const allCompleted = mainSteps.every(step => (step.progress || 0) === 100);
+        let progress = Math.round(weightedProgress);
+        if (progress === 100 && !allCompleted) {
+          progress = 99; // Força não ser 100% se nem todas estão completas
+        }
         
-        // 2. Recalcular Progresso das Obras
-        const updatedProjects = projects.map(project => {
-          const projectItems = updatedSchedule.filter(item => item.projectId === project.id);
-          if (projectItems.length === 0) return project;
+        // Determinar status baseado no progresso
+        let status = p.status;
+        if (progress === 100) status = 'concluida';
+        else if (progress > 0 && status === 'planejamento') status = 'em_execucao';
 
-          // O progresso da obra é a média ponderada das etapas principais (que não têm pai)
-          const mainSteps = projectItems.filter(item => !item.parentStepId);
-          if (mainSteps.length === 0) return project;
-
-          const totalWeight = mainSteps.reduce((acc, step) => acc + (step.weight || 0), 0);
-          const weightedProgress = mainSteps.reduce((acc, step) => {
-            return acc + ((step.progress || 0) * ((step.weight || 0) / (totalWeight || 1)));
-          }, 0);
-
-          const progress = Math.round(weightedProgress);
-          
-          // Determinar status baseado no progresso
-          let status = project.status;
-          if (progress === 100) status = 'concluido';
-          else if (progress > 0 && status === 'planejamento') status = 'em_execucao';
-
-          return { 
-            ...project, 
-            progress, 
-            status,
-            updatedAt: new Date().toISOString()
-          };
-        });
-
-        // 3. Atualizar Firestore em lote (Batch)
-        // Usamos setDoc com merge: true em vez de update para evitar erros de "No document to update"
-        // caso algum item tenha sido deletado recentemente
-        const batch = writeBatch(db);
+        // Calcular datas do projeto baseadas no cronograma
+        let maxEndDate = p.endDate;
+        let minStartDate = p.startDate;
         
-        const now = new Date().toISOString();
-
-        // Atualizar ScheduleItems que mudaram
-        updatedSchedule.forEach(item => {
-          const original = scheduleItems.find(i => i.id === item.id);
-          if (original && JSON.stringify(original) !== JSON.stringify(item)) {
-            // Verificamos se o item ainda existe no estado local para evitar recriar órfãos que acabaram de ser deletados
-            const stillExists = scheduleItems.some(i => i.id === item.id);
-            if (stillExists) {
-              // IMPORTANTE: Só atualizamos os campos calculados para evitar sobrescrever 
-              // alterações recentes (como datas) que ainda não foram refletidas no estado local
-              const calculatedFields = {
-                progress: item.progress,
-                realWeight: item.realWeight,
-                status: item.status,
-                startDate: item.startDate,
-                endDate: item.endDate,
-                updatedAt: now
-              };
-              batch.set(doc(db, 'scheduleItems', item.id), cleanData(calculatedFields), { merge: true });
+        const endDates = projectItems
+          .map(i => i.endDate)
+          .filter(Boolean) as string[];
+        
+        if (endDates.length > 0) {
+          let maxDateStr = endDates[0];
+          for (let i = 1; i < endDates.length; i++) {
+            if (compareDates(endDates[i], maxDateStr) > 0) {
+              maxDateStr = endDates[i];
             }
           }
-        });
+          maxEndDate = maxDateStr;
+        }
 
-        // Atualizar Projects que mudaram
-        updatedProjects.forEach(project => {
-          const original = projects.find(p => p.id === project.id);
-          if (original && JSON.stringify(original) !== JSON.stringify(project)) {
-            // Só atualizamos os campos calculados do projeto
-            const calculatedProjectFields = {
-              progress: project.progress,
-              status: project.status,
+        const startDates = projectItems
+          .map(i => i.startDate)
+          .filter(Boolean) as string[];
+        
+        if (startDates.length > 0) {
+          let minDateStr = startDates[0];
+          for (let i = 1; i < startDates.length; i++) {
+            if (compareDates(startDates[i], minDateStr) < 0) {
+              minDateStr = startDates[i];
+            }
+          }
+          minStartDate = minDateStr;
+        }
+
+        // Se o projeto tem totalDays e startDate, a data final é calculada por eles
+        const calculatedEndDate = (p.totalDays && (p.startDate || minStartDate)) 
+          ? addDays(p.startDate || minStartDate, p.totalDays - 1) 
+          : maxEndDate;
+
+        return { 
+          ...p, 
+          progress, 
+          status,
+          startDate: (p.startDate && p.startDate !== '') ? p.startDate : minStartDate,
+          endDate: calculatedEndDate,
+          updatedAt: new Date().toISOString()
+        };
+      });
+
+      // 3. Atualizar Firestore em lote (Batch)
+      const batch = writeBatch(db);
+      const now = new Date().toISOString();
+      let hasChanges = false;
+
+      // Atualizar ScheduleItems que mudaram
+      updatedSchedule.forEach(item => {
+        const original = scheduleItems.find(i => i.id === item.id);
+        
+        // Se forceFullRecalculate for true, atualizamos todos os itens do projeto alvo
+        const isTargetProject = projectId ? item.projectId === projectId : true;
+        const shouldUpdate = forceFullRecalculate && isTargetProject;
+
+        if (shouldUpdate || (original && JSON.stringify(original) !== JSON.stringify(item))) {
+          const stillExists = scheduleItems.some(i => i.id === item.id) || (updatedItem && updatedItem.id === item.id);
+          if (stillExists) {
+            hasChanges = true;
+            const calculatedFields = {
+              progress: item.progress,
+              realWeight: item.realWeight,
+              status: item.status,
+              startDate: item.startDate,
+              endDate: item.endDate,
+              durationManual: item.durationManual,
+              durationManualEnabled: item.durationManualEnabled,
+              startDateManual: item.startDateManual,
+              endDateManual: item.endDateManual,
+              dateLockedManual: item.dateLockedManual,
+              manualStartDate: item.manualStartDate,
+              manualEndDate: item.manualEndDate,
+              manualDays: item.manualDays,
               updatedAt: now
             };
-            batch.set(doc(db, 'projects', project.id), cleanData(calculatedProjectFields), { merge: true });
+            batch.set(doc(db, 'scheduleItems', item.id), cleanData(calculatedFields), { merge: true });
           }
-        });
+        }
+      });
 
+      // Atualizar Projects que mudaram
+      updatedProjects.forEach(project => {
+        const original = projects.find(p => p.id === project.id);
+        if (original && JSON.stringify(original) !== JSON.stringify(project)) {
+          hasChanges = true;
+          const calculatedProjectFields = {
+            progress: project.progress,
+            status: project.status,
+            startDate: project.startDate,
+            endDate: project.endDate,
+            updatedAt: now
+          };
+          batch.set(doc(db, 'projects', project.id), cleanData(calculatedProjectFields), { merge: true });
+        }
+      });
+
+      if (hasChanges) {
         await batch.commit();
-        console.log('Recálculo total concluído com sucesso.');
         
-        // Os estados locais serão atualizados automaticamente pelos listeners do onSnapshot
-      } catch (error) {
-        console.error('Erro ao recalcular dados:', error);
+        // Atualização otimista do estado local para evitar flickering
+        setScheduleItems(updatedSchedule);
+        setProjects(prev => prev.map(p => {
+          const updated = updatedProjects.find(up => up.id === p.id);
+          return updated || p;
+        }));
+        
+        console.log('[RecalculateAll] Batch commit realizado com sucesso.');
+      } else {
+        console.log('[RecalculateAll] Nenhuma alteração persistente necessária.');
       }
-    }, 300);
+      
+    } catch (error) {
+      console.error('[RecalculateAll] Erro fatal:', error);
+      throw error;
+    }
   };
 
   const cleanupOrphans = async () => {
@@ -993,8 +1652,31 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       return newUser.uid;
     } catch (authErr: any) {
       if (authErr.code === 'auth/email-already-in-use') {
-        console.warn('E-mail já existe no Auth. Perfil Firestore ausente.');
-        return 'auth-exists';
+        console.warn('E-mail já existe no Auth. Vinculando perfil ao Firestore...');
+        
+        // Try to sign in to get the existing UID
+        try {
+          const userCredential = await signInWithEmailAndPassword(secondaryAuth, userData.email, userData.password || 'admin123');
+          const existingUser = userCredential.user;
+          console.log('Usuário existente vinculado com UID:', existingUser.uid);
+
+          const { password, ...profileData } = userData;
+          const userProfile: User = {
+            ...profileData,
+            id: existingUser.uid,
+            uid: existingUser.uid,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+
+          await setDoc(doc(db, 'users', existingUser.uid), cleanData(userProfile));
+          console.log('Perfil salvo no Firestore com UID existente:', existingUser.uid);
+          
+          return existingUser.uid;
+        } catch (signInErr) {
+          console.error('Erro ao vincular usuário existente:', signInErr);
+          throw new Error('Este e-mail já está cadastrado no Firebase Auth, mas não foi possível vincular ao Firestore. Verifique a senha.');
+        }
       }
       throw authErr;
     }
@@ -1101,7 +1783,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
     const unsubSchedule = onSnapshot(collection(db, 'scheduleItems'), (snapshot) => {
       const items = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }) as ScheduleItem);
-      setScheduleItems(recalculateSchedule(items));
+      setScheduleItems(items);
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, 'scheduleItems');
     });
@@ -1165,7 +1847,12 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const addProject = async (project: Omit<Project, 'id'>) => {
     try {
       const id = generateId();
-      await setDoc(doc(db, 'projects', id), cleanData({ ...project, id }));
+      const newProject = { ...project, id };
+      await setDoc(doc(db, 'projects', id), cleanData(newProject));
+      
+      // Recalcular para inicializar datas do projeto
+      await recalculateAll(id, undefined, undefined, newProject as Project, true);
+      
       return id;
     } catch (err: any) {
       if (err.code === 'permission-denied') {
@@ -1175,8 +1862,27 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     }
   };
   const updateProject = async (id: string, data: Partial<Project>) => {
+    const oldProject = projects.find(p => p.id === id);
+    if (!oldProject) return;
+    
+    const updatedProject = { ...oldProject, ...data };
+    
+    // Atualização otimista do estado local
+    setProjects(prev => prev.map(p => p.id === id ? updatedProject : p));
+    
     try {
       await updateDoc(doc(db, 'projects', id), cleanData(data));
+      
+      // Se mudar dias totais ou data de início, força recálculo total do cronograma
+      // Isso irá resetar as durações manuais para que se ajustem ao novo prazo total
+      const forceFullRecalculate = data.totalDays !== undefined || data.startDate !== undefined;
+      
+      if (forceFullRecalculate) {
+        console.log(`[ProjectUpdate] Mudança crítica detectada (totalDays ou startDate). Forçando recálculo total para o projeto ${id}.`);
+      }
+      
+      // Recalcular apenas para esta obra
+      await recalculateAll(id, undefined, undefined, updatedProject, forceFullRecalculate);
     } catch (err: any) {
       if (err.code === 'permission-denied') {
         handleFirestoreError(err, OperationType.UPDATE, `projects/${id}`);
@@ -1343,9 +2049,21 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const addScheduleItem = async (item: Omit<ScheduleItem, 'id'>) => {
     try {
       const id = generateId();
-      await setDoc(doc(db, 'scheduleItems', id), cleanData({ ...item, id }));
-      // Após adicionar um item, recalcular tudo para garantir consistência
-      setTimeout(() => recalculateAll(), 500);
+      
+      // Se não tiver ordem, calcular a próxima
+      let finalOrdem = item.ordem;
+      if (finalOrdem === undefined) {
+        const sameLevelItems = scheduleItems.filter(i => 
+          i.projectId === item.projectId && 
+          i.parentStepId === item.parentStepId
+        );
+        const maxOrdem = sameLevelItems.reduce((max, i) => Math.max(max, i.ordem || 0), 0);
+        finalOrdem = maxOrdem + 1;
+      }
+
+      await setDoc(doc(db, 'scheduleItems', id), cleanData({ ...item, id, ordem: finalOrdem }));
+      // Após adicionar um item, recalcular apenas para este projeto
+      recalculateAll(item.projectId);
       return id;
     } catch (err: any) {
       if (err.code === 'permission-denied') {
@@ -1355,11 +2073,22 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     }
   };
   const updateScheduleItem = async (id: string, data: Partial<ScheduleItem>) => {
+    const currentItem = scheduleItems.find(i => i.id === id);
+    const updatedItem = { 
+      ...currentItem, 
+      ...data,
+      startDateManual: data.startDate !== undefined ? true : currentItem?.startDateManual,
+      endDateManual: data.endDate !== undefined ? true : currentItem?.endDateManual
+    } as ScheduleItem;
+    setScheduleItems(prev => prev.map(item => item.id === id ? updatedItem : item));
     try {
       const docRef = doc(db, 'scheduleItems', id);
-      await updateDoc(docRef, cleanData(data));
-      // Após atualizar um item, recalcular tudo para garantir consistência
-      setTimeout(() => recalculateAll(), 500);
+      await updateDoc(docRef, cleanData(updatedItem));
+      
+      // Recálculo controlado: apenas para este projeto
+      if (updatedItem.projectId) {
+        recalculateAll(updatedItem.projectId, undefined, updatedItem);
+      }
     } catch (err: any) {
       // Se o documento não existir, ignoramos silenciosamente pois ele pode ter sido deletado
       // como efeito colateral de outra operação (ex: exclusão de etapa pai)
@@ -1374,6 +2103,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     }
   };
   const deleteScheduleItem = async (id: string) => {
+    const itemToDelete = scheduleItems.find(i => i.id === id);
+    const projectId = itemToDelete?.projectId;
     try {
       const batch = writeBatch(db);
       
@@ -1391,12 +2122,850 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       pendenciesDocs.forEach(d => batch.delete(d.ref));
       
       await batch.commit();
-      // Após excluir um item, recalcular tudo para garantir consistência
-      setTimeout(() => recalculateAll(), 500);
+      // Após excluir um item, recalcular apenas para este projeto
+      if (projectId) recalculateAll(projectId);
     } catch (err: any) {
       if (err.code === 'permission-denied') {
         handleFirestoreError(err, OperationType.DELETE, `scheduleItems/${id}`);
       }
+      throw err;
+    }
+  };
+
+  const batchUpdateScheduleItems = async (items: { id: string, updates: Partial<ScheduleItem> }[]) => {
+    try {
+      const batch = writeBatch(db);
+      const projectIds = new Set<string>();
+      items.forEach(({ id, updates }) => {
+        batch.update(doc(db, 'scheduleItems', id), cleanData(updates));
+        const item = scheduleItems.find(i => i.id === id);
+        if (item?.projectId) projectIds.add(item.projectId);
+      });
+      await batch.commit();
+      // Recalcular apenas para os projetos afetados
+      projectIds.forEach(pId => recalculateAll(pId));
+    } catch (err: any) {
+      console.error('Error batch updating schedule items:', err);
+      throw err;
+    }
+  };
+
+  const generateAutomaticSchedule = async (projectId: string, startDate: string) => {
+    try {
+      const batch = writeBatch(db);
+      const now = new Date().toISOString();
+
+      // First, delete all existing schedule items for this project
+      const existingItems = scheduleItems.filter(i => i.projectId === projectId);
+      existingItems.forEach(item => {
+        batch.delete(doc(db, 'scheduleItems', item.id));
+      });
+
+      // Also delete related pendencies
+      const existingPendencies = pendencies.filter(p => existingItems.some(i => i.id === p.scheduleItemId));
+      existingPendencies.forEach(p => {
+        batch.delete(doc(db, 'pendencies', p.id));
+      });
+
+      const itemsToCreate: ScheduleItem[] = [];
+
+      // Intelligent Sequence Logic for Automatic Schedule
+      const stagesToOrder = [
+        { id: 'civil', weight: 1, itemCount: 15 },
+        { id: 'hidraulica', weight: 1, itemCount: 6 },
+        { id: 'exaustao', weight: 1, itemCount: 2 },
+        { id: 'incendio', weight: 1, itemCount: 5 },
+        { id: 'gesso', weight: 1, itemCount: 4 },
+        { id: 'eletrica', weight: 1, itemCount: 24 },
+        { id: 'acabamento', weight: 1, itemCount: 10 }
+      ];
+
+      const sortedStages = stagesToOrder
+        .map(s => ({ ...s, score: getSequenceScore(s.id, s.weight, s.itemCount) }))
+        .sort((a, b) => a.score - b.score);
+
+      const dynamicOrders: Record<string, number> = { 'demolicao': 1 };
+      sortedStages.forEach((s, index) => {
+        dynamicOrders[s.id] = index + 2;
+      });
+      dynamicOrders['acabamento'] = sortedStages.length + 2;
+
+      // Helper to create an item
+      const createItem = (data: Partial<ScheduleItem>) => {
+        const id = generateId();
+        const item = {
+          id,
+          projectId,
+          progress: 0,
+          status: 'pendente' as const,
+          createdAt: now,
+          updatedAt: now,
+          ...data
+        } as ScheduleItem;
+        itemsToCreate.push(item);
+        return id;
+      };
+
+      // 1. Demolição (Root)
+      const demolicaoId = createItem({
+        title: 'Demolição',
+        activityType: 'demolicao_simples',
+        startDate: startDate,
+        complexity: 'media',
+        baseDurationDays: BASE_DURATIONS['demolicao_simples'],
+        weight: 1,
+        ordem: dynamicOrders['demolicao'] || 1
+      });
+      // Demolições podem ocorrer em paralelo
+      createItem({ title: 'Demolição FORRO', parentStepId: demolicaoId, activityType: 'demolicao_forro', complexity: 'media', baseDurationDays: 2, weight: 1, ordem: 1 });
+      createItem({ title: 'Demolição PAREDE', parentStepId: demolicaoId, activityType: 'demolicao_parede', complexity: 'media', baseDurationDays: 2, weight: 1, ordem: 2 });
+
+      // 2. Contra piso / Azulejo / Alvenaria
+      const civilId = createItem({ title: 'Contra piso / Azulejo / Alvenaria', weight: 1, ordem: dynamicOrders['civil'] || 2 });
+      
+      // Alvenarias podem ser paralelas após demolição se forem de ambientes diferentes
+      const alvenariaId = createItem({
+        title: 'Elevação de Alvenaria do Balcão Principal', parentStepId: civilId, activityType: 'elevacao_alvenaria',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: BASE_DURATIONS['elevacao_alvenaria'], weight: 1, ordem: 1,
+        workFront: 'Balcão Principal'
+      });
+      const alvenariaPassapratoId = createItem({
+        title: 'Elevação de Alvenaria do Balcão Passaprato', parentStepId: civilId, activityType: 'elevacao_alvenaria',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: BASE_DURATIONS['elevacao_alvenaria'], weight: 1, ordem: 2,
+        workFront: 'Balcão Passaprato'
+      });
+
+      // Cerâmicas dependem de suas respectivas alvenarias (mesmo ambiente)
+      const ceramicaId = createItem({
+        title: 'Assentamento de Cerâmica no Balcão Principal', parentStepId: civilId, activityType: 'assentamento_ceramica',
+        liberatingActivityId: alvenariaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: BASE_DURATIONS['assentamento_ceramica'], weight: 1, ordem: 3,
+        workFront: 'Balcão Principal'
+      });
+      const ceramicaPassapratoId = createItem({
+        title: 'Assentamento de Cerâmica no Balcão Passaprato', parentStepId: civilId, activityType: 'assentamento_ceramica',
+        liberatingActivityId: alvenariaPassapratoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: BASE_DURATIONS['assentamento_ceramica'], weight: 1, ordem: 4,
+        workFront: 'Balcão Passaprato'
+      });
+
+      // Outras atividades civis que podem ser paralelas ou dependem de demolição
+      const pastilhasId = createItem({
+        title: 'Assentamento de Pastilhas, ATENDIMENTO', parentStepId: civilId, activityType: 'assentamento_pastilhas',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 5,
+        workFront: 'Atendimento'
+      });
+      const preparacaoCozinhaId = createItem({
+        title: 'Preparação da parede da COZINHA', parentStepId: civilId, activityType: 'preparacao_parede',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 6,
+        workFront: 'Cozinha'
+      });
+
+      // Rejuntes dependem das cerâmicas/pastilhas
+      const rejunteAtendimentoId = createItem({
+        title: 'Rejunte no, ATENDIMENTO', parentStepId: civilId, activityType: 'rejunte',
+        liberatingActivityId: ceramicaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 7,
+        workFront: 'Balcão Principal'
+      });
+      const rejuntePastilhasId = createItem({
+        title: 'Rejunte nas Pastilhas, ATENDIMENTO', parentStepId: civilId, activityType: 'rejunte',
+        liberatingActivityId: pastilhasId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 8,
+        workFront: 'Atendimento'
+      });
+      const rejunteCozinhaId = createItem({
+        title: 'Rejunte na, COZINHA', parentStepId: civilId, activityType: 'rejunte',
+        liberatingActivityId: preparacaoCozinhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 9,
+        workFront: 'Cozinha'
+      });
+
+      // Granito e Acabamentos finais
+      const granitoId = createItem({
+        title: 'Instalação de Pedras de Granito', parentStepId: civilId, activityType: 'granito',
+        liberatingActivityId: rejunteCozinhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 10
+      });
+      const cantoneiraId = createItem({
+        title: 'Instalação de Cantoneiras na Loja', parentStepId: civilId, activityType: 'cantoneira',
+        liberatingActivityId: granitoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 11
+      });
+      createItem({
+        title: 'Limpeza e Organização Final', parentStepId: civilId, activityType: 'outros',
+        liberatingActivityId: cantoneiraId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 12
+      });
+
+      // 3. Gesso / Parede / Forro
+      const gessoId = createItem({ title: 'Gesso / Parede / Forro', weight: 1, ordem: dynamicOrders['gesso'] || 3 });
+      
+      // Fechamentos de parede podem ser paralelos após demolição
+      const fechamentoParedeCozinhaId = createItem({
+        title: 'Fechamento da Parede, COZINHA', parentStepId: gessoId, activityType: 'fechamento_parede',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 1,
+        workFront: 'Cozinha'
+      });
+      const fechamentoParedeAtendimentoId = createItem({
+        title: 'Fechamento da Parede, ATENDIMENTO', parentStepId: gessoId, activityType: 'fechamento_parede',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 2,
+        workFront: 'Atendimento'
+      });
+
+      // Fechamentos de forro dependem de infraestruturas (simplificado aqui para depender de demolição + tempo)
+      const fechamentoForroCozinhaId = createItem({
+        title: 'Fechamento de Forro, COZINHA', parentStepId: gessoId, activityType: 'fechamento_forro',
+        liberatingActivityId: fechamentoParedeCozinhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 3,
+        workFront: 'Cozinha'
+      });
+      const fechamentoForroAtendimentoId = createItem({
+        title: 'Fechamento de Forro, ATENDIMENTO', parentStepId: gessoId, activityType: 'fechamento_forro',
+        liberatingActivityId: fechamentoParedeAtendimentoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 4,
+        workFront: 'Atendimento'
+      });
+
+      // 4. Hidráulica
+      const hidraulicaId = createItem({ title: 'Hidráulica', weight: 1, ordem: dynamicOrders['hidraulica'] || 4 });
+      
+      // Revisões podem ser paralelas
+      const revisaoTubulacaoEsgotoId = createItem({
+        title: 'Revisão Tubulação Esgoto', parentStepId: hidraulicaId, activityType: 'hidraulica_revisao',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 1, workFront: 'Área Técnica'
+      });
+      const impermeabilizacaoRevisaoId = createItem({
+        title: 'Impermeabilização/ Revisão no Ralos', parentStepId: hidraulicaId, activityType: 'hidraulica_revisao',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 2, workFront: 'Cozinha'
+      });
+      const revisaoTubulacaoVentilacaoId = createItem({
+        title: 'Revisão Tubulação Ventilação / Suspiro', parentStepId: hidraulicaId, activityType: 'hidraulica_revisao',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 3, workFront: 'Área Técnica'
+      });
+      const revisaoTubulacaoDrenoId = createItem({
+        title: 'Revisão Tubulação Dreno', parentStepId: hidraulicaId, activityType: 'hidraulica_revisao',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 4, workFront: 'Cozinha'
+      });
+      const revisaoTubulacaoAguaFriaId = createItem({
+        title: 'Revisão Tubulação Água Fria', parentStepId: hidraulicaId, activityType: 'hidraulica_revisao',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 3, weight: 1, ordem: 5, workFront: 'Área Técnica'
+      });
+
+      // Instalação final depende das revisões e granito
+      createItem({
+        title: 'Instalação dos Sifões, Torneiras e Caixas de Gorduras', parentStepId: hidraulicaId, activityType: 'hidraulica_instalacao_final',
+        liberatingActivityId: granitoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 6, workFront: 'Cozinha'
+      });
+
+      // 5. Exaustão
+      const exaustaoId = createItem({ title: 'Exaustão / Ventilação / Ar-condicionado', weight: 1, ordem: dynamicOrders['exaustao'] || 5 });
+      const instalacaoCoifaId = createItem({
+        title: 'Instalação da Coifa', parentStepId: exaustaoId, activityType: 'coifa',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 3, weight: 1, ordem: 1, workFront: 'Cozinha'
+      });
+      createItem({
+        title: 'Instalação de Grelhas', parentStepId: exaustaoId, activityType: 'grelhas',
+        liberatingActivityId: fechamentoForroCozinhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 2, workFront: 'Teto'
+      });
+
+      // 6. Incêndio
+      const incendioId = createItem({ title: 'Sistema de Combate ao Incêndio', weight: 1, ordem: dynamicOrders['incendio'] || 6 });
+      const revisaoTubosSPKId = createItem({
+        title: 'Revisão Tubos do SPK', parentStepId: incendioId, activityType: 'incendio_revisao',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 1, workFront: 'Teto'
+      });
+      const instalacaoBicosSPKId = createItem({
+        title: 'Instalação Bicos do SPK', parentStepId: incendioId, activityType: 'incendio_instalacao',
+        liberatingActivityId: fechamentoForroAtendimentoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 2, workFront: 'Teto'
+      });
+      const revisaoSistemaGasId = createItem({
+        title: 'Revisão do sistema de GAS', parentStepId: incendioId, activityType: 'incendio_revisao',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 3, workFront: 'Cozinha'
+      });
+      const testeEstanqueidadeGasId = createItem({
+        title: 'Teste de Estanqueidade de GAS', parentStepId: incendioId, activityType: 'incendio_testes',
+        liberatingActivityId: revisaoSistemaGasId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 4, workFront: 'Cozinha'
+      });
+      createItem({
+        title: 'Teste de Hidrostático de SPK', parentStepId: incendioId, activityType: 'incendio_testes',
+        liberatingActivityId: instalacaoBicosSPKId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 5, workFront: 'Teto'
+      });
+
+      // 7. Elétrica
+      const eletricaId = createItem({ title: 'Elétrica', weight: 1, ordem: dynamicOrders['eletrica'] || 7 });
+      
+      // Infras elétricas podem ser todas paralelas após demolição
+      const infraSteckFritadeirasId = createItem({
+        title: 'Infra Steck Fritadeiras', parentStepId: eletricaId, activityType: 'eletrica_infra',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 1, workFront: 'Cozinha'
+      });
+      const infraSteckBanhoMariaId = createItem({
+        title: 'Infra Steck Banho Maria', parentStepId: eletricaId, activityType: 'eletrica_infra',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 2, workFront: 'Cozinha'
+      });
+      const infraTomadaMicroondasId = createItem({
+        title: 'Infra Tomada Microondas / Lidificador', parentStepId: eletricaId, activityType: 'eletrica_infra',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 3, workFront: 'Cozinha'
+      });
+      const infraTomadaMaquinaSucoId = createItem({
+        title: 'Infra Tomada Maquina de Suco', parentStepId: eletricaId, activityType: 'eletrica_infra',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 4, workFront: 'Balcão Principal'
+      });
+      const infraTomadaFreezerId = createItem({
+        title: 'Infra Tomada Freezer', parentStepId: eletricaId, activityType: 'eletrica_infra',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 5, workFront: 'Cozinha'
+      });
+      const infraDadosImpressoraId = createItem({
+        title: 'Infra Dados Impressora, COZINHA', parentStepId: eletricaId, activityType: 'eletrica_infra',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 6, workFront: 'Cozinha'
+      });
+      const infraDadosComputadorId = createItem({
+        title: 'Infra Dados Computador, ATENDIMENTO', parentStepId: eletricaId, activityType: 'eletrica_infra',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 7, workFront: 'Atendimento'
+      });
+
+      // Cabeamentos dependem de suas respectivas infras
+      const cabeamentoSteckFritadeirasId = createItem({
+        title: 'Cabeamento Steck Fritadeiras', parentStepId: eletricaId, activityType: 'eletrica_cabeamento',
+        liberatingActivityId: infraSteckFritadeirasId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 8, workFront: 'Cozinha'
+      });
+      const cabeamentoSteckBanhoMariaId = createItem({
+        title: 'Cabeamento Steck Banho Maria', parentStepId: eletricaId, activityType: 'eletrica_cabeamento',
+        liberatingActivityId: infraSteckBanhoMariaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 9, workFront: 'Cozinha'
+      });
+      const cabeamentoTomadaMicroondasId = createItem({
+        title: 'Cabeamento Tomada Microondas / Lidificador', parentStepId: eletricaId, activityType: 'eletrica_cabeamento',
+        liberatingActivityId: infraTomadaMicroondasId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 10, workFront: 'Cozinha'
+      });
+      const cabeamentoTomadaMaquinaSucoId = createItem({
+        title: 'Cabeamento Tomada Maquina de Suco', parentStepId: eletricaId, activityType: 'eletrica_cabeamento',
+        liberatingActivityId: infraTomadaMaquinaSucoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 11, workFront: 'Balcão Principal'
+      });
+      const cabeamentoTomadaFreezerId = createItem({
+        title: 'Cabeamento Tomada Freezer', parentStepId: eletricaId, activityType: 'eletrica_cabeamento',
+        liberatingActivityId: infraTomadaFreezerId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 12, workFront: 'Cozinha'
+      });
+      const cabeamentoDadosImpressoraId = createItem({
+        title: 'Cabeamento Dados Impressora, COZINHA', parentStepId: eletricaId, activityType: 'eletrica_cabeamento',
+        liberatingActivityId: infraDadosImpressoraId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 13, workFront: 'Cozinha'
+      });
+      const cabeamentoDadosComputadorId = createItem({
+        title: 'Cabeamento Dados Computador, ATENDIMENTO', parentStepId: eletricaId, activityType: 'eletrica_cabeamento',
+        liberatingActivityId: infraDadosComputadorId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 14, workFront: 'Atendimento'
+      });
+
+      // Rabichos dependem de cabeamento
+      const colocacaoRabichoMenuId = createItem({
+        title: 'Colocação de rabicho (Menuboard, Letreiro, Chama senha)', parentStepId: eletricaId, activityType: 'eletrica_rabicho',
+        liberatingActivityId: cabeamentoDadosComputadorId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 15, workFront: 'Atendimento'
+      });
+      const colocacaoRabichoIlumId = createItem({
+        title: 'Colocação de rabicho (Iluminação e Iluminação de emergencia)', parentStepId: eletricaId, activityType: 'eletrica_rabicho',
+        liberatingActivityId: cabeamentoDadosComputadorId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 3, weight: 1, ordem: 16, workFront: 'Teto'
+      });
+
+      // Instalações finais dependem de gesso e pintura (simplificado aqui)
+      const acabamentoPontosTomadasId = createItem({
+        title: 'Acabamento de pontos de tomadas', parentStepId: eletricaId, activityType: 'eletrica_instalacao',
+        liberatingActivityId: colocacaoRabichoMenuId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 3, weight: 1, ordem: 17, workFront: 'Paredes'
+      });
+      const indentificacaoTomadasId = createItem({
+        title: 'Indentificação das tomadas/ Quadro', parentStepId: eletricaId, activityType: 'eletrica_instalacao',
+        liberatingActivityId: acabamentoPontosTomadasId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 3, weight: 1, ordem: 18, workFront: 'Área Técnica'
+      });
+      const instalacaoIlumEmergenciaId = createItem({
+        title: 'Instalação Ilum. de Emergência', parentStepId: eletricaId, activityType: 'eletrica_iluminacao',
+        liberatingActivityId: fechamentoForroAtendimentoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 3, weight: 1, ordem: 19, workFront: 'Teto'
+      });
+      const instalacaoIlumCozinhaId = createItem({
+        title: 'Instalação Ilum. COZINHA', parentStepId: eletricaId, activityType: 'eletrica_iluminacao',
+        liberatingActivityId: fechamentoForroCozinhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 20, workFront: 'Teto'
+      });
+      const instalacaoIlumAtendimentoId = createItem({
+        title: 'Instalação Ilum. ATENDIMENTO', parentStepId: eletricaId, activityType: 'eletrica_iluminacao',
+        liberatingActivityId: fechamentoForroAtendimentoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 21, workFront: 'Teto'
+      });
+      const instalacaoIlumMezaninoId = createItem({
+        title: 'Instalação Ilum. MEZANINO', parentStepId: eletricaId, activityType: 'eletrica_iluminacao',
+        liberatingActivityId: fechamentoForroAtendimentoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 22, workFront: 'Teto'
+      });
+      const conectirizacaoQuadroId = createItem({
+        title: 'Conectirização do quadro', parentStepId: eletricaId, activityType: 'eletrica_quadro',
+        liberatingActivityId: indentificacaoTomadasId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 23, workFront: 'Área Técnica'
+      });
+      createItem({
+        title: 'Teste de circuitos elétricos', parentStepId: eletricaId, activityType: 'eletrica_testes',
+        liberatingActivityId: conectirizacaoQuadroId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 24, workFront: 'Área Técnica'
+      });
+
+
+      // 8. Acabamento
+      const acabamentoId = createItem({ title: 'Acabamento', weight: 1, ordem: dynamicOrders['acabamento'] || 8 });
+      const preparacaoParedeVermelhaId = createItem({
+        title: 'Preparação na Parede Vermelha', parentStepId: acabamentoId, activityType: 'acabamento_preparacao',
+        liberatingActivityId: fechamentoForroAtendimentoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 1, workFront: 'Atendimento'
+      });
+      const pinturaParedeVermelhaId = createItem({
+        title: 'Pintura na Parede Vermelha, ATENDIMENTO', parentStepId: acabamentoId, activityType: 'acabamento_pintura',
+        liberatingActivityId: preparacaoParedeVermelhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 2, workFront: 'Atendimento'
+      });
+      const acabamentoTetoCozinhaId = createItem({
+        title: 'Acabamento no Teto, COZINHA', parentStepId: acabamentoId, activityType: 'acabamento_final',
+        liberatingActivityId: pinturaParedeVermelhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 3, workFront: 'Teto'
+      });
+      const acabamentoTetoAtendimentoId = createItem({
+        title: 'Acabamento no Teto, ATENDIMENTO', parentStepId: acabamentoId, activityType: 'acabamento_final',
+        liberatingActivityId: acabamentoTetoCozinhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 4, workFront: 'Teto'
+      });
+      const acabamentoParedeMezaninoId = createItem({
+        title: 'Acabamento Parede, MEZANINO', parentStepId: acabamentoId, activityType: 'acabamento_final',
+        liberatingActivityId: acabamentoTetoAtendimentoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 5, workFront: 'Mezanino'
+      });
+      const pinturaTetoCozinhaId = createItem({
+        title: 'Pitura no teto, COZINHA', parentStepId: acabamentoId, activityType: 'acabamento_pintura',
+        liberatingActivityId: acabamentoParedeMezaninoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 6, workFront: 'Teto'
+      });
+      const pinturaTetoAtendimentoId = createItem({
+        title: 'Pitura no Teto, ATENDIMENTO', parentStepId: acabamentoId, activityType: 'acabamento_pintura',
+        liberatingActivityId: pinturaTetoCozinhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 7
+      });
+      const pinturaParedeMezaninoId = createItem({
+        title: 'Pitura no Parede, MEZANINO', parentStepId: acabamentoId, activityType: 'acabamento_pintura',
+        liberatingActivityId: pinturaTetoAtendimentoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 8
+      });
+      const pinturaNoTetoMezaninoId = createItem({
+        title: 'Pitura no Teto, MEZANINO', parentStepId: acabamentoId, activityType: 'acabamento_pintura',
+        liberatingActivityId: pinturaParedeMezaninoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 9
+      });
+      const pinturaCasaMaquinasId = createItem({
+        title: 'Pitura na casa de MAQUINAS', parentStepId: acabamentoId, activityType: 'acabamento_pintura',
+        liberatingActivityId: pinturaNoTetoMezaninoId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 10
+      });
+      createItem({
+        title: 'Pitura tubulação Água Fria', parentStepId: acabamentoId, activityType: 'acabamento_pintura',
+        liberatingActivityId: pinturaCasaMaquinasId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 1, weight: 1, ordem: 11, workFront: 'Área Técnica'
+      });
+
+      // 9. Marcenaria
+      const marcenariaId = createItem({ title: 'Marcenaria', weight: 1, ordem: dynamicOrders['marcenaria'] || 9 });
+      const montagemBalcaoPrincipalId = createItem({
+        title: 'Montagem do Balcão Principal', parentStepId: marcenariaId, activityType: 'marcenaria_montagem',
+        liberatingActivityId: pinturaParedeVermelhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 3, weight: 1, ordem: 1, workFront: 'Balcão Principal'
+      });
+      const montagemMoveisCozinhaId = createItem({
+        title: 'Montagem de Móveis, COZINHA', parentStepId: marcenariaId, activityType: 'marcenaria_montagem',
+        liberatingActivityId: pinturaParedeVermelhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 3, weight: 1, ordem: 2, workFront: 'Cozinha'
+      });
+      const montagemMoveisAtendimentoId = createItem({
+        title: 'Montagem de Móveis, ATENDIMENTO', parentStepId: marcenariaId, activityType: 'marcenaria_montagem',
+        liberatingActivityId: pinturaParedeVermelhaId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 3, weight: 1, ordem: 3, workFront: 'Atendimento'
+      });
+
+      // 10. Vidraçaria
+      const vidracariaId = createItem({ title: 'Vidraçaria', weight: 1, ordem: dynamicOrders['vidracaria'] || 10 });
+      const instalacaoVidrosId = createItem({
+        title: 'Instalação de Vidros e Espelhos', parentStepId: vidracariaId, activityType: 'vidracaria_instalacao',
+        liberatingActivityId: montagemBalcaoPrincipalId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 1, workFront: 'Atendimento'
+      });
+
+      // 11. Limpeza e Entrega
+      const entregaId = createItem({ title: 'Limpeza e Entrega', weight: 1, ordem: dynamicOrders['entrega'] || 11 });
+      const limpezaFinaId = createItem({
+        title: 'Limpeza Fina', parentStepId: entregaId, activityType: 'limpeza',
+        liberatingActivityId: instalacaoVidrosId, linkType: 'FS', complexity: 'media',
+        baseDurationDays: 2, weight: 1, ordem: 1
+      });
+      createItem({
+        title: 'Entrega da Obra', parentStepId: entregaId, activityType: 'entrega',
+        liberatingActivityId: limpezaFinaId, linkType: 'FS', complexity: 'baixa',
+        baseDurationDays: 1, weight: 1, ordem: 2
+      });
+
+      // Calculate dates before committing
+      const calculatedItems = recalculateSchedule(itemsToCreate);
+
+      // Add all new items to batch
+      calculatedItems.forEach(item => {
+        batch.set(doc(db, 'scheduleItems', item.id), cleanData(item));
+      });
+
+      await batch.commit();
+      
+      // We don't need to call recalculateAll() here because we already calculated the dates
+      // and the onSnapshot listener will update the local state with the fully calculated items.
+    } catch (err: any) {
+      console.error('Error generating automatic schedule:', err);
+      throw err;
+    }
+  };
+
+  const generateScheduleByDuration = async (
+    projectId: string, 
+    startDate: string, 
+    totalDays: number, 
+    complexity: Complexity,
+    weights: {
+      demolicao: number;
+      civil: number;
+      eletrica: number;
+      hidraulica: number;
+      gesso: number;
+      exaustao: number;
+      incendio: number;
+      acabamento: number;
+    }
+  ) => {
+    try {
+      const batch = writeBatch(db);
+      const now = new Date().toISOString();
+
+      // First, delete all existing schedule items for this project
+      const existingItems = scheduleItems.filter(i => i.projectId === projectId);
+      existingItems.forEach(item => {
+        batch.delete(doc(db, 'scheduleItems', item.id));
+      });
+
+      // Also delete related pendencies
+      const existingPendencies = pendencies.filter(p => existingItems.some(i => i.id === p.scheduleItemId));
+      existingPendencies.forEach(p => {
+        batch.delete(doc(db, 'pendencies', p.id));
+      });
+
+      const itemsToCreate: ScheduleItem[] = [];
+
+      // Helper to create an item
+      const createItem = (data: Partial<ScheduleItem>) => {
+        const id = generateId();
+        const item = {
+          id,
+          projectId,
+          progress: 0,
+          status: 'pendente' as const,
+          createdAt: now,
+          updatedAt: now,
+          ...data
+        } as ScheduleItem;
+        itemsToCreate.push(item);
+        return id;
+      };
+
+      // Helper to calculate duration based on weight
+      const calcDuration = (weightPct: number) => {
+        return Math.max(1, Math.round(totalDays * (weightPct / 100)));
+      };
+
+      // Helper to distribute duration among substeps
+      const distributeDuration = (totalSubDays: number, subSteps: {id: string, base: number}[]) => {
+        const totalBase = subSteps.reduce((acc, sub) => acc + sub.base, 0);
+        return subSteps.map(sub => ({
+          id: sub.id,
+          duration: Math.max(1, Math.round(totalSubDays * (sub.base / totalBase)))
+        }));
+      };
+
+      // Intelligent Sequence Logic
+      const stagesToOrder = [
+        { id: 'civil', weight: weights.civil, itemCount: 6 },
+        { id: 'hidraulica', weight: weights.hidraulica, itemCount: 4 },
+        { id: 'exaustao', weight: weights.exaustao, itemCount: 3 },
+        { id: 'incendio', weight: weights.incendio, itemCount: 4 },
+        { id: 'gesso', weight: weights.gesso, itemCount: 3 },
+        { id: 'eletrica', weight: weights.eletrica, itemCount: 5 },
+        { id: 'acabamento', weight: weights.acabamento, itemCount: 4 }
+      ];
+
+      const sortedStages = stagesToOrder
+        .map(s => ({ ...s, score: getSequenceScore(s.id, s.weight) }))
+        .sort((a, b) => a.score - b.score);
+
+      const dynamicOrders: Record<string, number> = { 'demolicao': 1 };
+      sortedStages.forEach((s, index) => {
+        dynamicOrders[s.id] = index + 2;
+      });
+      dynamicOrders['acabamento'] = sortedStages.length + 2;
+
+      // 1. Demolição (Root)
+      const demolicaoDays = calcDuration(weights.demolicao);
+      const demolicaoId = createItem({
+        title: 'Demolição',
+        activityType: 'demolicao_simples',
+        startDate: startDate,
+        endDate: addDays(startDate, demolicaoDays - 1),
+        complexity: complexity,
+        baseDurationDays: demolicaoDays,
+        dateLockedManual: true,
+        startDateManual: true,
+        endDateManual: true,
+        weight: weights.demolicao,
+        ordem: dynamicOrders['demolicao']
+      });
+      createItem({ title: 'Demolição FORRO', parentStepId: demolicaoId, activityType: 'demolicao_forro', complexity: complexity, baseDurationDays: Math.max(1, Math.round(demolicaoDays/2)), weight: 1, ordem: 1 });
+      createItem({ title: 'Demolição PAREDE', parentStepId: demolicaoId, activityType: 'demolicao_parede', complexity: complexity, baseDurationDays: Math.max(1, Math.round(demolicaoDays/2)), weight: 1, ordem: 2 });
+
+      // 2. Contra piso / Azulejo / Alvenaria
+      const civilDays = calcDuration(weights.civil);
+      const civilId = createItem({ title: 'Contra piso / Azulejo / Alvenaria', weight: weights.civil, ordem: dynamicOrders['civil'] });
+      const civilSubSteps = [
+        { id: 'alvenaria', base: BASE_DURATIONS['elevacao_alvenaria'] },
+        { id: 'ceramica', base: BASE_DURATIONS['assentamento_ceramica'] },
+        { id: 'rejunte', base: BASE_DURATIONS['rejunte'] },
+        { id: 'granito', base: BASE_DURATIONS['granito'] },
+        { id: 'cantoneira', base: BASE_DURATIONS['cantoneira'] }
+      ];
+      const civilDist = distributeDuration(civilDays, civilSubSteps);
+      
+      const alvenariaId = createItem({
+        title: 'Elevação de Alvenaria', parentStepId: civilId, activityType: 'elevacao_alvenaria',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: civilDist.find(d => d.id === 'alvenaria')?.duration || 1, weight: 2, ordem: 1
+      });
+      const ceramicaId = createItem({
+        title: 'Assentamento de Cerâmica', parentStepId: civilId, activityType: 'assentamento_ceramica',
+        liberatingActivityId: alvenariaId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: civilDist.find(d => d.id === 'ceramica')?.duration || 1, weight: 3, ordem: 2
+      });
+      const rejunteId = createItem({
+        title: 'Rejunte', parentStepId: civilId, activityType: 'rejunte',
+        liberatingActivityId: ceramicaId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: civilDist.find(d => d.id === 'rejunte')?.duration || 1, weight: 1, ordem: 3
+      });
+      const granitoId = createItem({
+        title: 'Instalação de Granito', parentStepId: civilId, activityType: 'granito',
+        liberatingActivityId: rejunteId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: civilDist.find(d => d.id === 'granito')?.duration || 1, weight: 2, ordem: 4
+      });
+      createItem({
+        title: 'Instalação de Cantoneiras', parentStepId: civilId, activityType: 'cantoneira',
+        liberatingActivityId: granitoId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: civilDist.find(d => d.id === 'cantoneira')?.duration || 1, weight: 1, ordem: 5
+      });
+
+      // 3. Gesso / Parede / Forro
+      const gessoDays = calcDuration(weights.gesso);
+      const gessoId = createItem({ title: 'Gesso / Parede / Forro', weight: weights.gesso, ordem: dynamicOrders['gesso'] });
+      const gessoSubSteps = [
+        { id: 'parede', base: BASE_DURATIONS['fechamento_parede'] },
+        { id: 'forro', base: BASE_DURATIONS['fechamento_forro'] }
+      ];
+      const gessoDist = distributeDuration(gessoDays, gessoSubSteps);
+
+      const fechamentoParedeId = createItem({
+        title: 'Fechamento de Parede', parentStepId: gessoId, activityType: 'fechamento_parede',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: gessoDist.find(d => d.id === 'parede')?.duration || 1, weight: 2, ordem: 1,
+        workFront: 'Geral'
+      });
+      createItem({
+        title: 'Fechamento de Forro', parentStepId: gessoId, activityType: 'fechamento_forro',
+        liberatingActivityId: fechamentoParedeId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: gessoDist.find(d => d.id === 'forro')?.duration || 1, weight: 3, ordem: 2,
+        workFront: 'Geral'
+      });
+
+      // 4. Hidráulica
+      const hidraulicaDays = calcDuration(weights.hidraulica);
+      const hidraulicaId = createItem({ title: 'Hidráulica', weight: weights.hidraulica, ordem: dynamicOrders['hidraulica'] });
+      const hidraulicaSubSteps = [
+        { id: 'revisao', base: BASE_DURATIONS['hidraulica_revisao'] },
+        { id: 'tubulacao', base: BASE_DURATIONS['hidraulica_tubulacao'] },
+        { id: 'instalacao', base: BASE_DURATIONS['hidraulica_instalacao_final'] }
+      ];
+      const hidraulicaDist = distributeDuration(hidraulicaDays, hidraulicaSubSteps);
+
+      const revisaoHidraulicaId = createItem({
+        title: 'Revisão Hidráulica', parentStepId: hidraulicaId, activityType: 'hidraulica_revisao',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: hidraulicaDist.find(d => d.id === 'revisao')?.duration || 1, weight: 1, ordem: 1
+      });
+      const tubulacaoId = createItem({
+        title: 'Tubulação Hidráulica', parentStepId: hidraulicaId, activityType: 'hidraulica_tubulacao',
+        liberatingActivityId: revisaoHidraulicaId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: hidraulicaDist.find(d => d.id === 'tubulacao')?.duration || 1, weight: 3, ordem: 2
+      });
+      createItem({
+        title: 'Instalação Final Hidráulica', parentStepId: hidraulicaId, activityType: 'hidraulica_instalacao_final',
+        liberatingActivityId: tubulacaoId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: hidraulicaDist.find(d => d.id === 'instalacao')?.duration || 1, weight: 2, ordem: 3
+      });
+
+      // 5. Exaustão
+      const exaustaoDays = calcDuration(weights.exaustao);
+      const exaustaoId = createItem({ title: 'Exaustão / Ventilação / Ar-condicionado', weight: weights.exaustao, ordem: dynamicOrders['exaustao'] });
+      const exaustaoSubSteps = [
+        { id: 'coifa', base: BASE_DURATIONS['coifa'] },
+        { id: 'grelhas', base: BASE_DURATIONS['grelhas'] }
+      ];
+      const exaustaoDist = distributeDuration(exaustaoDays, exaustaoSubSteps);
+
+      const coifaId = createItem({
+        title: 'Instalação de Coifa', parentStepId: exaustaoId, activityType: 'coifa',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: exaustaoDist.find(d => d.id === 'coifa')?.duration || 1, weight: 3, ordem: 1
+      });
+      createItem({
+        title: 'Instalação de Grelhas', parentStepId: exaustaoId, activityType: 'grelhas',
+        liberatingActivityId: coifaId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: exaustaoDist.find(d => d.id === 'grelhas')?.duration || 1, weight: 1, ordem: 2
+      });
+
+      // 6. Incêndio
+      const incendioDays = calcDuration(weights.incendio);
+      const incendioId = createItem({ title: 'Sistema de Combate ao Incêndio', weight: weights.incendio, ordem: dynamicOrders['incendio'] });
+      const incendioSubSteps = [
+        { id: 'revisao', base: BASE_DURATIONS['incendio_revisao'] },
+        { id: 'instalacao', base: BASE_DURATIONS['incendio_instalacao'] },
+        { id: 'testes', base: BASE_DURATIONS['incendio_testes'] }
+      ];
+      const incendioDist = distributeDuration(incendioDays, incendioSubSteps);
+
+      const revisaoIncendioId = createItem({
+        title: 'Revisão Sistema Incêndio', parentStepId: incendioId, activityType: 'incendio_revisao',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: incendioDist.find(d => d.id === 'revisao')?.duration || 1, weight: 1, ordem: 1
+      });
+      const instalacaoIncendioId = createItem({
+        title: 'Instalação Sistema Incêndio', parentStepId: incendioId, activityType: 'incendio_instalacao',
+        liberatingActivityId: revisaoIncendioId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: incendioDist.find(d => d.id === 'instalacao')?.duration || 1, weight: 3, ordem: 2
+      });
+      createItem({
+        title: 'Testes Sistema Incêndio', parentStepId: incendioId, activityType: 'incendio_testes',
+        liberatingActivityId: instalacaoIncendioId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: incendioDist.find(d => d.id === 'testes')?.duration || 1, weight: 1, ordem: 3
+      });
+
+      // 7. Elétrica
+      const eletricaDays = calcDuration(weights.eletrica);
+      const eletricaId = createItem({ title: 'Elétrica', weight: weights.eletrica, ordem: dynamicOrders['eletrica'] });
+      const eletricaSubSteps = [
+        { id: 'infra', base: BASE_DURATIONS['eletrica_infra'] },
+        { id: 'cabeamento', base: BASE_DURATIONS['eletrica_cabeamento'] },
+        { id: 'instalacao', base: BASE_DURATIONS['eletrica_iluminacao'] },
+        { id: 'testes', base: BASE_DURATIONS['eletrica_testes'] }
+      ];
+      const eletricaDist = distributeDuration(eletricaDays, eletricaSubSteps);
+
+      const infraEletricaId = createItem({
+        title: 'Infraestrutura Elétrica', parentStepId: eletricaId, activityType: 'eletrica_infra',
+        liberatingActivityId: demolicaoId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: eletricaDist.find(d => d.id === 'infra')?.duration || 1, weight: 3, ordem: 1
+      });
+      const cabeamentoId = createItem({
+        title: 'Cabeamento Elétrico', parentStepId: eletricaId, activityType: 'eletrica_cabeamento',
+        liberatingActivityId: infraEletricaId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: eletricaDist.find(d => d.id === 'cabeamento')?.duration || 1, weight: 2, ordem: 2
+      });
+      const instalacaoEletricaId = createItem({
+        title: 'Instalação Elétrica/Iluminação', parentStepId: eletricaId, activityType: 'eletrica_iluminacao',
+        liberatingActivityId: cabeamentoId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: eletricaDist.find(d => d.id === 'instalacao')?.duration || 1, weight: 2, ordem: 3
+      });
+      createItem({
+        title: 'Testes Elétricos', parentStepId: eletricaId, activityType: 'eletrica_testes',
+        liberatingActivityId: instalacaoEletricaId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: eletricaDist.find(d => d.id === 'testes')?.duration || 1, weight: 1, ordem: 4
+      });
+
+      // 8. Acabamento
+      const acabamentoDays = calcDuration(weights.acabamento);
+      const acabamentoId = createItem({ title: 'Acabamento', weight: weights.acabamento, ordem: dynamicOrders['acabamento'] });
+      const acabamentoSubSteps = [
+        { id: 'preparacao', base: BASE_DURATIONS['acabamento_preparacao'] },
+        { id: 'pintura', base: BASE_DURATIONS['acabamento_pintura'] },
+        { id: 'final', base: BASE_DURATIONS['acabamento_final'] }
+      ];
+      const acabamentoDist = distributeDuration(acabamentoDays, acabamentoSubSteps);
+
+      const preparacaoAcabamentoId = createItem({
+        title: 'Preparação para Acabamento', parentStepId: acabamentoId, activityType: 'acabamento_preparacao',
+        liberatingActivityId: fechamentoParedeId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: acabamentoDist.find(d => d.id === 'preparacao')?.duration || 1, weight: 1, ordem: 1
+      });
+      const pinturaId = createItem({
+        title: 'Pintura', parentStepId: acabamentoId, activityType: 'acabamento_pintura',
+        liberatingActivityId: preparacaoAcabamentoId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: acabamentoDist.find(d => d.id === 'pintura')?.duration || 1, weight: 3, ordem: 2
+      });
+      createItem({
+        title: 'Acabamento Final', parentStepId: acabamentoId, activityType: 'acabamento_final',
+        liberatingActivityId: pinturaId, linkType: 'FS', complexity: complexity,
+        baseDurationDays: acabamentoDist.find(d => d.id === 'final')?.duration || 1, weight: 2, ordem: 3
+      });
+
+
+      // Calculate dates before committing
+      const calculatedItems = recalculateSchedule(itemsToCreate);
+
+      // Add all new items to batch
+      calculatedItems.forEach(item => {
+        batch.set(doc(db, 'scheduleItems', item.id), cleanData(item));
+      });
+
+      await batch.commit();
+      
+      // Return the calculated items so the caller can check the final duration
+      return calculatedItems;
+    } catch (err: any) {
+      console.error('Error generating schedule by duration:', err);
       throw err;
     }
   };
@@ -1456,7 +3025,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       deleteProjectTemplate,
       addPendency, updatePendency, deletePendency,
       addActivity, updateActivity, deleteActivity,
-      addScheduleItem, updateScheduleItem, deleteScheduleItem,
+      addScheduleItem, updateScheduleItem, deleteScheduleItem, batchUpdateScheduleItems, generateAutomaticSchedule, generateScheduleByDuration,
       addTransaction, updateTransaction, deleteTransaction,
       updateSettings,
       migrateToFirestore,
@@ -1468,7 +3037,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       isImporting,
       migrationLog,
       dataStatus,
-      currentUser, loading, error, login, logout,
+      currentUser, loading, error, login, register, logout,
       recalculateAll,
       clearAllData
     }}>

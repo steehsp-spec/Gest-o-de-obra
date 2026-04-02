@@ -5,79 +5,142 @@
       "description": "User profile",
       "type": "object",
       "properties": {
+        "id": { "type": "string" },
         "uid": { "type": "string" },
         "email": { "type": "string", "format": "email" },
         "name": { "type": "string" },
-        "role": { "type": "string", "enum": ["admin", "engineer", "foreman", "finance", "client"] }
+        "phone": { "type": "string" },
+        "role": { "type": "string", "enum": ["administrador", "engenheiro", "encarregado", "financeiro", "cliente"] },
+        "status": { "type": "string", "enum": ["ativo", "inativo"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["uid", "email", "name", "role"]
+      "required": ["id", "uid", "email", "name", "role", "status"]
     },
     "Project": {
       "title": "Project",
       "description": "Construction project",
       "type": "object",
       "properties": {
+        "id": { "type": "string" },
         "name": { "type": "string" },
         "code": { "type": "string" },
         "client": { "type": "string" },
+        "phone": { "type": "string" },
         "address": { "type": "string" },
+        "city": { "type": "string" },
         "startDate": { "type": "string", "format": "date" },
         "endDate": { "type": "string", "format": "date" },
+        "totalDays": { "type": "number" },
         "managerId": { "type": "string" },
         "budget": { "type": "number" },
-        "status": { "type": "string", "enum": ["active", "completed", "delayed", "on-hold"] }
+        "status": { "type": "string", "enum": ["planejamento", "em_execucao", "paralizada", "concluida", "atrasada"] },
+        "description": { "type": "string" },
+        "progress": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["name", "code", "client", "address", "startDate", "endDate", "managerId", "budget", "status"]
+      "required": ["id", "name", "code", "client", "address", "startDate", "endDate", "managerId", "budget", "status", "progress"]
     },
     "ProjectTemplate": {
       "title": "ProjectTemplate",
       "description": "Template for project schedule structure",
       "type": "object",
       "properties": {
+        "id": { "type": "string" },
         "name": { "type": "string" },
-        "type": { "type": "string", "enum": ["obra_completa", "obra_parcial", "manutencao", "em_branco"] },
+        "type": { "type": "string", "enum": ["obra_completa", "obra_parcial", "manutencao", "em_branco", "personalizado"] },
         "structure": { "type": "array" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["name", "type", "structure"]
+      "required": ["id", "name", "type", "structure"]
     },
     "Pendency": {
       "title": "Pendency",
       "description": "Issue or pendency linked to a project or schedule item",
       "type": "object",
       "properties": {
+        "id": { "type": "string" },
         "title": { "type": "string" },
         "description": { "type": "string" },
         "projectId": { "type": "string" },
         "stage": { "type": "string" },
         "scheduleItemId": { "type": "string" },
-        "origin": { "type": "string", "enum": ["cronograma", "outro"] },
         "responsibleId": { "type": "string" },
         "priority": { "type": "string", "enum": ["baixa", "media", "alta", "critica"] },
         "deadline": { "type": "string", "format": "date" },
-        "status": { "type": "string", "enum": ["aberta", "em_andamento", "resolvida", "cancelada"] },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "status": { "type": "string", "enum": ["aberta", "em_andamento", "resolvida", "cancelada"] }
       },
-      "required": ["title", "projectId", "responsibleId", "priority", "deadline", "status", "createdAt"]
+      "required": ["id", "title", "projectId", "responsibleId", "priority", "deadline", "status"]
     },
     "ScheduleItem": {
       "title": "ScheduleItem",
       "description": "Item in the project schedule",
       "type": "object",
       "properties": {
+        "id": { "type": "string" },
         "projectId": { "type": "string" },
+        "parentStepId": { "type": "string" },
         "title": { "type": "string" },
+        "ordem": { "type": "number" },
+        "status": { "type": "string", "enum": ["pendente", "em_andamento", "em_processo", "revisao", "finalizando", "concluido", "atrasado"] },
+        "progress": { "type": "number" },
+        "weight": { "type": "number" },
+        "complexity": { "type": "string", "enum": ["baixa", "media", "alta"] },
+        "startDate": { "type": "string", "format": "date" },
+        "endDate": { "type": "string", "format": "date" }
+      },
+      "required": ["id", "projectId", "title", "ordem", "status", "progress", "weight"]
+    },
+    "Activity": {
+      "title": "Activity",
+      "description": "Daily activity in a project",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "projectId": { "type": "string" },
+        "stage": { "type": "string" },
         "responsibleId": { "type": "string" },
         "startDate": { "type": "string", "format": "date" },
         "endDate": { "type": "string", "format": "date" },
-        "status": { "type": "string", "enum": ["pendente", "em_andamento", "concluido", "atrasado"] },
+        "priority": { "type": "string", "enum": ["baixa", "media", "alta", "critica"] },
         "progress": { "type": "number" },
-        "weight": { "type": "number" },
-        "realWeight": { "type": "number" },
-        "complexity": { "type": "string", "enum": ["baixa", "media", "alta"] },
-        "parentStepId": { "type": "string" }
+        "status": { "type": "string", "enum": ["a_fazer", "em_andamento", "revisao", "finalizando", "concluido"] }
       },
-      "required": ["projectId", "title", "responsibleId", "startDate", "endDate", "status", "progress", "weight"]
+      "required": ["id", "name", "projectId", "stage", "responsibleId", "startDate", "endDate", "priority", "progress", "status"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Financial transaction (income/expense)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "projectId": { "type": "string" },
+        "description": { "type": "string" },
+        "amount": { "type": "number" },
+        "type": { "type": "string", "enum": ["entrada", "saida"] },
+        "category": { "type": "string", "enum": ["materiais", "mao_de_obra", "equipamentos", "administrativo", "impostos", "recebimento", "outros"] },
+        "date": { "type": "string", "format": "date" },
+        "status": { "type": "string", "enum": ["pendente", "pago", "atrasado"] }
+      },
+      "required": ["id", "projectId", "description", "amount", "type", "category", "date", "status"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "Global application settings",
+      "type": "object",
+      "properties": {
+        "companyName": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "address": { "type": "string" },
+        "responsible": { "type": "string" },
+        "primaryColor": { "type": "string" },
+        "notificationsEnabled": { "type": "boolean" },
+        "theme": { "type": "string", "enum": ["dark", "light"] }
+      },
+      "required": ["companyName", "phone", "email", "address", "responsible", "primaryColor", "notificationsEnabled", "theme"]
     }
   },
   "firestore": {
@@ -100,6 +163,18 @@
     "/scheduleItems/{scheduleItemId}": {
       "schema": { "$ref": "ScheduleItem" },
       "description": "Project schedule items"
+    },
+    "/activities/{activityId}": {
+      "schema": { "$ref": "Activity" },
+      "description": "Daily activities"
+    },
+    "/transactions/{transactionId}": {
+      "schema": { "$ref": "Transaction" },
+      "description": "Financial transactions"
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "Settings" },
+      "description": "Global settings"
     }
   }
 }

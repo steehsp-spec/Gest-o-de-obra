@@ -4,42 +4,41 @@ import { Loader2, Check, AlertCircle } from 'lucide-react';
 interface InlineDateInputProps {
   value: string;
   onUpdate: (date: string) => Promise<void>;
+  className?: string;
 }
 
-export const InlineDateInput: React.FC<InlineDateInputProps> = ({ value, onUpdate }) => {
+export const InlineDateInput: React.FC<InlineDateInputProps> = ({ value, onUpdate, className }) => {
   const [isEditing, setIsEditing] = useState(false);
-  const [date, setDate] = useState(value.split('T')[0]);
+  const [date, setDate] = useState(value);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
   useEffect(() => {
-    setDate(value.split('T')[0]);
+    setDate(value);
   }, [value]);
 
   const handleSave = async (newDate: string) => {
-    if (!newDate || newDate === value.split('T')[0]) {
+    if (!newDate || newDate === value) {
       setIsEditing(false);
-      setDate(value.split('T')[0]);
+      setDate(value);
       return;
     }
 
     setIsLoading(true);
     setStatus('idle');
     try {
-      // Validar se a data é válida antes de converter
-      const dateObj = new Date(newDate + 'T12:00:00');
-      if (isNaN(dateObj.getTime())) {
+      // Validate format YYYY-MM-DD
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
         throw new Error('Data inválida');
       }
       
-      const isoDate = dateObj.toISOString();
-      await onUpdate(isoDate);
+      await onUpdate(newDate);
       setStatus('success');
       setTimeout(() => setStatus('idle'), 2000);
     } catch (error) {
       console.error('Erro ao salvar data:', error);
       setStatus('error');
-      setDate(value.split('T')[0]); // Revert on error
+      setDate(value); // Revert on error
       setTimeout(() => setStatus('idle'), 3000);
     } finally {
       setIsLoading(false);
@@ -57,7 +56,7 @@ export const InlineDateInput: React.FC<InlineDateInputProps> = ({ value, onUpdat
     if (e.key === 'Enter') {
       handleSave(date);
     } else if (e.key === 'Escape') {
-      setDate(value.split('T')[0]);
+      setDate(value);
       setIsEditing(false);
     }
   };
@@ -73,7 +72,7 @@ export const InlineDateInput: React.FC<InlineDateInputProps> = ({ value, onUpdat
           onKeyDown={handleKeyDown}
           autoFocus
           disabled={isLoading}
-          className="bg-[#0B0E14] border border-[#F97316] text-white text-sm rounded px-1 py-0.5 w-full focus:outline-none disabled:opacity-50"
+          className={`bg-[#0B0E14] border border-[#F97316] text-white text-sm rounded px-1 py-0.5 w-full focus:outline-none disabled:opacity-50 ${className}`}
         />
         {isLoading && (
           <div className="absolute right-1">
@@ -85,20 +84,17 @@ export const InlineDateInput: React.FC<InlineDateInputProps> = ({ value, onUpdat
   }
 
   const formatDate = (val: string) => {
-    try {
-      const d = new Date(val);
-      if (isNaN(d.getTime())) return 'Data inválida';
-      return d.toLocaleDateString('pt-BR');
-    } catch {
-      return 'Data inválida';
-    }
+    if (!val) return 'Data inválida';
+    const parts = val.split('-');
+    if (parts.length !== 3) return 'Data inválida';
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
   };
 
   return (
     <div className="flex items-center gap-2 group">
       <span 
         onClick={() => !isLoading && setIsEditing(true)}
-        className="cursor-pointer hover:bg-white/10 px-1 py-0.5 rounded transition-colors"
+        className={`cursor-pointer hover:bg-white/10 px-1 py-0.5 rounded transition-colors ${className}`}
       >
         {formatDate(value)}
       </span>
