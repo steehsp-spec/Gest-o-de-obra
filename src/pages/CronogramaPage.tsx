@@ -232,37 +232,14 @@ export default function CronogramaPage() {
     return { status: 'ok', label: 'Dentro do prazo' };
   }, [project, overallProgress]);
 
-  // Calculate Dependency Options (Predecessors only, grouped by stage)
+  // Calculate Dependency Options (All items except current, grouped by stage)
   const dependencyOptions = useMemo(() => {
     if (!filterProject) return [];
     
     const allItems = scheduleItems.filter(s => s.projectId === filterProject);
     
-    // Helper to get global position
-    const getPos = (item: any) => {
-      if (!item.parentStepId) return (item.ordem || 0) * 1000;
-      const parent = allItems.find(p => p.id === item.parentStepId);
-      return ((parent?.ordem || 0) * 1000) + (item.ordem || 0);
-    };
-
-    // Find current item's position
-    let currentPos = Infinity;
-    if (editingItem) {
-      currentPos = getPos(editingItem);
-    } else if (parentStepId) {
-      const parent = allItems.find(p => p.id === parentStepId);
-      const subStepsCount = allItems.filter(s => s.parentStepId === parentStepId).length;
-      currentPos = ((parent?.ordem || 0) * 1000) + subStepsCount;
-    } else {
-      const mainStepsCount = allItems.filter(s => !s.parentStepId).length;
-      currentPos = mainStepsCount * 1000;
-    }
-
-    // Filter predecessors
-    const predecessors = allItems.filter(i => {
-      if (i.id === editingItem?.id) return false;
-      return getPos(i) < currentPos;
-    });
+    // Filter all items except the current one
+    const availableItems = allItems.filter(i => i.id !== editingItem?.id);
 
     // Group by Stage
     const mainStages = allItems
@@ -272,7 +249,7 @@ export default function CronogramaPage() {
     const grouped: { stage: string, items: any[] }[] = [];
     
     mainStages.forEach(stage => {
-      const stageItems = predecessors.filter(p => p.id === stage.id || p.parentStepId === stage.id);
+      const stageItems = availableItems.filter(p => p.id === stage.id || p.parentStepId === stage.id);
       if (stageItems.length > 0) {
         grouped.push({
           stage: stage.title,
@@ -282,7 +259,7 @@ export default function CronogramaPage() {
     });
 
     return grouped;
-  }, [scheduleItems, filterProject, editingItem, parentStepId]);
+  }, [scheduleItems, filterProject, editingItem]);
 
   const expectedEndDate = useMemo(() => {
     if (project?.endDate) return formatDateToBR(project.endDate);

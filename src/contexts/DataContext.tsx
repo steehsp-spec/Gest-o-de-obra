@@ -1129,7 +1129,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
               }
             }
           } else {
-            // Verificar dependências legadas (sempre FS)
+            // Verificar dependências explícitas
             const deps = updatedItems[itemIndex].dependsOnIds || (updatedItems[itemIndex].dependsOnId ? [updatedItems[itemIndex].dependsOnId] : []);
             if (deps.length > 0) {
               let maxEndDate: string | null = null;
@@ -1144,119 +1144,17 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
                 referenceDate = addDays(maxEndDate, 1);
               }
             } else if (updatedItems[itemIndex].parentStepId) {
-              // Lógica de Paralelismo por Frente de Trabalho (Ambiente)
-              const parentId = updatedItems[itemIndex].parentStepId;
-              const currentItem = updatedItems[itemIndex];
-              const siblings = projectItems
-                .filter(i => i.parentStepId === parentId)
-                .sort((a, b) => a.ordem - b.ordem);
-              
-              const myIdxInSiblings = siblings.findIndex(i => i.id === currentItem.id);
-              
-              if (myIdxInSiblings > 0) {
-                // Se houver frente de trabalho definida, só espera o anterior DA MESMA FRENTE
-                // Se não houver frente, mantém a sequência padrão dentro da etapa
-                const previousInSameFront = siblings
-                  .slice(0, myIdxInSiblings)
-                  .reverse()
-                  .find(s => !currentItem.workFront || !s.workFront || s.workFront === currentItem.workFront);
-
-                if (previousInSameFront) {
-                  const prev = updatedItems.find(i => i.id === previousInSameFront.id);
-                  if (prev && prev.endDate) {
-                    referenceDate = addDays(prev.endDate, 1);
-                  }
-                } else {
-                  // Se não houver predecessor na mesma frente, começa junto com o pai
-                  const parent = updatedItems.find(i => i.id === parentId);
-                  if (parent && parent.startDate) {
-                    referenceDate = parseDateStr(parent.startDate);
-                  }
-                }
-              } else {
-                // Primeiro subitem: herda do pai
-                const parent = updatedItems.find(i => i.id === parentId);
-                if (parent && parent.startDate) {
-                  referenceDate = parseDateStr(parent.startDate);
-                }
+              // Sem dependências e é subetapa -> inicia na data do pai
+              const parent = updatedItems.find(i => i.id === updatedItems[itemIndex].parentStepId);
+              if (parent && parent.startDate) {
+                referenceDate = parseDateStr(parent.startDate);
+              } else if (project?.startDate) {
+                referenceDate = parseDateStr(project.startDate);
               }
             } else {
-              // Lógica de Paralelismo entre Etapas Principais
-              const sortedMainSteps = projectItems
-                .filter(i => !i.parentStepId)
-                .sort((a, b) => a.ordem - b.ordem);
-              
-              const currentItem = updatedItems[itemIndex];
-              const myIdxInMain = sortedMainSteps.findIndex(i => i.id === currentItem.id);
-              
-              if (myIdxInMain > 0) {
-                const previousStage = updatedItems.find(i => i.id === sortedMainSteps[myIdxInMain - 1].id);
-                
-                // Etapas que podem ser paralelas (Civil, Elétrica, Hidráulica, Gesso, Exaustão, Incêndio)
-                const parallelFriendlyStages = ['civil', 'elétrica', 'hidráulica', 'gesso', 'exaustão', 'incêndio'];
-                const isParallelFriendly = (title: string) => {
-                  const t = title.toLowerCase();
-                  return parallelFriendlyStages.some(s => t.includes(s));
-                };
-
-                const isDemolition = (title: string) => title.toLowerCase().includes('demolição');
-
-                if (isParallelFriendly(currentItem.title)) {
-                  // Se for uma etapa paralela, ela deve esperar apenas a Demolição (se houver)
-                  const demolitionStage = sortedMainSteps.find(s => isDemolition(s.title));
-                  if (demolitionStage && demolitionStage.endDate && currentItem.id !== demolitionStage.id) {
-                    referenceDate = addDays(demolitionStage.endDate, 1);
-                  } else if (project?.startDate) {
-                    // Se não houver demolição ou for a própria demolição, começa no início do projeto
-                    referenceDate = parseDateStr(project.startDate);
-                  }
-                } else if (previousStage && previousStage.endDate) {
-                  // Etapas não paralelas (como Acabamento ou Limpeza) esperam a anterior
-                  referenceDate = addDays(previousStage.endDate, 1);
-                }
-              } else {
-                // Primeira etapa: início do projeto
-                if (project?.startDate) {
-                  referenceDate = parseDateStr(project.startDate);
-                }
-              }
-            }
-          }
-
-          // --- Lógica de Dependências Implícitas (Conflitos Reais por Frente) ---
-          // Esta lógica adiciona restrições extras mesmo que não haja dependência explícita
-          const hasExplicitDeps = liberatorId || item.dependsOnId || (item.dependsOnIds && item.dependsOnIds.length > 0);
-          if (!hasExplicitDeps && item.workFront) {
-            const currentTitle = item.title.toLowerCase();
-            const currentFront = item.workFront;
-
-            // 1. Gesso/Forro espera Elétrica/Infra na mesma frente
-            if (currentTitle.includes('gesso') || currentTitle.includes('forro')) {
-              const blockingInfra = projectItems.find(i => 
-                i.workFront === currentFront && 
-                (i.title.toLowerCase().includes('elétrica') || i.title.toLowerCase().includes('infra')) &&
-                i.id !== item.id
-              );
-              if (blockingInfra && blockingInfra.endDate) {
-                const d = parseDateStr(blockingInfra.endDate);
-                if (d && (!referenceDate || compareDates(d, referenceDate) > 0)) {
-                  referenceDate = addDays(d, 1);
-                }
-              }
-            }
-
-            // 2. Acabamento/Pintura espera Infraestrutura na mesma frente
-            if (currentTitle.includes('acabamento') || currentTitle.includes('pintura')) {
-              const blockingInfra = projectItems.find(i => 
-                i.workFront === currentFront && 
-                (i.title.toLowerCase().includes('elétrica') || i.title.toLowerCase().includes('hidráulica') || i.title.toLowerCase().includes('gesso')) &&
-                i.id !== item.id
-              );
-              if (blockingInfra && blockingInfra.endDate) {
-                const d = parseDateStr(blockingInfra.endDate);
-                if (d && (!referenceDate || compareDates(d, referenceDate) > 0)) {
-                  referenceDate = addDays(d, 1);
-                }
+              // Sem dependências e é etapa principal -> inicia na data do projeto
+              if (project?.startDate) {
+                referenceDate = parseDateStr(project.startDate);
               }
             }
           }
