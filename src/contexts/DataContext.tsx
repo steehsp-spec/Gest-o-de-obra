@@ -28,6 +28,7 @@ import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { OBRA_COMPLETA_TEMPLATE, OBRA_PARCIAL_TEMPLATE, OBRA_MANUTENCAO_TEMPLATE } from '../utils/projectTemplates';
 import { parseDateStr, addDays, getDaysBetween } from '../utils/dateUtils';
+import { recalculateScheduleLogic } from '../utils/scheduleLogic';
 
 interface DataContextType {
   users: User[];
@@ -95,7 +96,7 @@ interface DataContextType {
 
   updateSettings: (settings: Partial<Settings>) => Promise<void>;
   migrateToFirestore: () => Promise<void>;
-  recalculateAll: (projectId?: string, stageId?: string) => Promise<void>;
+  recalculateAll: (projectId?: string, stageId?: string, updatedItem?: ScheduleItem, updatedProject?: Project, forceFullRecalculate?: boolean) => Promise<void>;
   clearAllData: () => Promise<void>;
   
   // Backup & Restore
@@ -902,346 +903,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   };
 
   const recalculateSchedule = (items: ScheduleItem[], projectId?: string, stageId?: string, updatedProject?: Project, forceFullRecalculate?: boolean) => {
-    // Create a deep-ish copy to avoid mutating the original state objects
-    const updatedItems = items.map(item => ({ ...item }));
-    const projectIds = projectId ? [projectId] : Array.from(new Set(updatedItems.map(i => i.projectId)));
-
-    const parseDateStr = (dateStr: string | undefined | null): string | null => {
-      if (!dateStr || typeof dateStr !== 'string' || dateStr === 'undefined' || dateStr === 'null') return null;
-      return dateStr;
-    };
-
-    projectIds.forEach(pId => {
-      const project = (updatedProject && updatedProject.id === pId) ? updatedProject : projects.find(p => p.id === pId);
-      if (!project) return;
-      
-      const totalDays = project.totalDays || 0;
-      const projectItems = updatedItems.filter(i => i.projectId === pId);
-      const mainSteps = projectItems.filter(i => !i.parentStepId).sort((a, b) => a.ordem - b.ordem);
-
-      // Se for um recálculo forçado (mudança no projeto), resetamos apenas as travas de data, mas mantemos as durações manuais se possível
-      if (forceFullRecalculate) {
-        console.log(`[Recalculate] Resetando travas de data para o projeto ${pId} devido a recálculo forçado.`);
-        projectItems.forEach(item => {
-          const itemIndex = updatedItems.findIndex(i => i.id === item.id);
-          if (itemIndex !== -1) {
-            // Mantemos durationManualEnabled para respeitar a vontade do usuário de fixar um prazo
-            updatedItems[itemIndex].startDateManual = false;
-            updatedItems[itemIndex].endDateManual = false;
-            updatedItems[itemIndex].dateLockedManual = false;
-            updatedItems[itemIndex].manualStartDate = undefined;
-            updatedItems[itemIndex].manualEndDate = undefined;
-            // manualDays e durationManual são mantidos se durationManualEnabled for true
-          }
-        });
-      }
-
-      // 0. Recalcular pesos e durações automáticas
-      
-      // 0.1. Distribuir dias entre etapas principais (se não houver stageId específico)
-      if (!stageId && totalDays > 0) {
-        // Identificar etapas com duração manual e subtrair do total
-        const manualMainSteps = mainSteps.filter(s => s.durationManualEnabled && s.durationManual !== undefined);
-        
-        // "Aprender" com os dados manuais: atualizar pesos baseados na proporção real
-        manualMainSteps.forEach(step => {
-          const itemIndex = updatedItems.findIndex(i => i.id === step.id);
-          if (itemIndex !== -1) {
-            // Nenhuma etapa pode ultrapassar o total da obra
-            if ((updatedItems[itemIndex].durationManual || 0) > totalDays) {
-              updatedItems[itemIndex].durationManual = totalDays;
-            }
-            // Atualizar peso para refletir a proporção manual
-            const newWeight = ((updatedItems[itemIndex].durationManual || 0) / totalDays) * 100;
-            updatedItems[itemIndex].weight = Number(newWeight.toFixed(2));
-          }
-        });
-
-        const manualDays = manualMainSteps.reduce((acc, s) => acc + (s.durationManual || 0), 0);
-        const remainingDays = Math.max(0, totalDays - manualDays);
-        const autoMainSteps = mainSteps.filter(s => !s.durationManualEnabled);
-        const totalAutoWeight = autoMainSteps.reduce((acc, s) => acc + (s.weight || 0), 0);
-
-        if (totalAutoWeight > 0) {
-          let allocatedAutoDays = 0;
-          autoMainSteps.forEach((step, idx) => {
-            const itemIndex = updatedItems.findIndex(i => i.id === step.id);
-            if (itemIndex === -1) return;
-            
-            let duration = 0;
-            if (idx === autoMainSteps.length - 1) {
-              duration = Math.max(1, remainingDays - allocatedAutoDays);
-            } else {
-              duration = Math.max(1, Math.round(remainingDays * (step.weight / totalAutoWeight)));
-            }
-            allocatedAutoDays += duration;
-            updatedItems[itemIndex].durationManual = duration;
-          });
-        }
-      }
-
-      // 0.2. Calcular pesos reais das subetapas
-      mainSteps.forEach(mainStep => {
-        // Garantir que a etapa principal tenha seu realWeight (que é o seu próprio peso %)
-        const mainStepIndex = updatedItems.findIndex(i => i.id === mainStep.id);
-        if (mainStepIndex !== -1) {
-          // Se o peso for 0 ou indefinido, tenta buscar um peso padrão baseado no título
-          if (!updatedItems[mainStepIndex].weight || updatedItems[mainStepIndex].weight === 0) {
-            const title = updatedItems[mainStepIndex].title.toLowerCase();
-            let defaultWeight = 10; // Default fallback
-            for (const [key, value] of Object.entries(DEFAULT_STAGE_WEIGHTS)) {
-              if (title.includes(key)) {
-                defaultWeight = value;
-                break;
-              }
-            }
-            updatedItems[mainStepIndex].weight = defaultWeight;
-          }
-          updatedItems[mainStepIndex].realWeight = updatedItems[mainStepIndex].weight || 0;
-        }
-
-        const subSteps = projectItems.filter(i => i.parentStepId === mainStep.id).sort((a, b) => a.ordem - b.ordem);
-        if (subSteps.length > 0) {
-          const totalComplexityWeight = subSteps.reduce((acc, sub) => acc + (sub.weight || 1), 0);
-          
-          subSteps.forEach(sub => {
-            const subIndex = updatedItems.findIndex(i => i.id === sub.id);
-            if (subIndex !== -1) {
-              const complexityWeight = sub.weight || 1;
-              const parentWeight = updatedItems[mainStepIndex].weight || 0;
-              const realWeight = parentWeight * (complexityWeight / (totalComplexityWeight || 1));
-              updatedItems[subIndex].realWeight = Number(realWeight.toFixed(2));
-            }
-          });
-        }
-      });
-
-      // 0.3. Distribuir dias entre subetapas dentro de cada etapa
-      mainSteps.forEach(mainStep => {
-        const subSteps = projectItems.filter(i => i.parentStepId === mainStep.id).sort((a, b) => a.ordem - b.ordem);
-        if (subSteps.length > 0) {
-          const mainIndex = updatedItems.findIndex(i => i.id === mainStep.id);
-          const stageDuration = updatedItems[mainIndex].durationManual || 1;
-          
-          // Identificar subetapas com duração manual e subtrair da duração da etapa
-          const manualSubSteps = subSteps.filter(s => s.durationManualEnabled && s.durationManual !== undefined);
-          
-          // "Aprender" com os dados manuais das subetapas
-          manualSubSteps.forEach(sub => {
-            const subIndex = updatedItems.findIndex(i => i.id === sub.id);
-            if (subIndex !== -1) {
-              // Garantir que subetapas manuais não ultrapassem a etapa
-              if ((updatedItems[subIndex].durationManual || 0) > stageDuration) {
-                updatedItems[subIndex].durationManual = stageDuration;
-              }
-              // Atualizar peso relativo da subetapa dentro da etapa pai
-              const newSubWeight = ((updatedItems[subIndex].durationManual || 0) / stageDuration) * (mainStep.weight || 10);
-              updatedItems[subIndex].weight = Number(newSubWeight.toFixed(2));
-            }
-          });
-
-          const manualSubDays = manualSubSteps.reduce((acc, s) => acc + (s.durationManual || 0), 0);
-          const remainingSubDays = Math.max(0, stageDuration - manualSubDays);
-          const autoSubSteps = subSteps.filter(s => !s.durationManualEnabled);
-          
-          const subStepDurationWeights = autoSubSteps.map(sub => {
-            // Distribuímos a duração da etapa proporcionalmente ao realWeight
-            return (sub.realWeight || 0);
-          });
-          
-          const totalSubDurationWeight = subStepDurationWeights.reduce((a, b) => a + b, 0);
-          
-          if (totalSubDurationWeight > 0) {
-            let allocatedSubDays = 0;
-            autoSubSteps.forEach((sub, idx) => {
-              const subIndex = updatedItems.findIndex(i => i.id === sub.id);
-              if (subIndex === -1) return;
-              
-              let duration = 0;
-              if (idx === autoSubSteps.length - 1) {
-                duration = Math.max(1, remainingSubDays - allocatedSubDays);
-              } else {
-                duration = Math.max(1, Math.round(remainingSubDays * (subStepDurationWeights[idx] / totalSubDurationWeight)));
-              }
-              allocatedSubDays += duration;
-              updatedItems[subIndex].durationManual = duration;
-            });
-          } else if (autoSubSteps.length > 0) {
-            // Fallback se não houver pesos: divide igualmente
-            let allocatedSubDays = 0;
-            autoSubSteps.forEach((sub, idx) => {
-              const subIndex = updatedItems.findIndex(i => i.id === sub.id);
-              if (subIndex === -1) return;
-              
-              let duration = 0;
-              if (idx === autoSubSteps.length - 1) {
-                duration = Math.max(1, remainingSubDays - allocatedSubDays);
-              } else {
-                duration = Math.max(1, Math.floor(remainingSubDays / autoSubSteps.length));
-              }
-              allocatedSubDays += duration;
-              updatedItems[subIndex].durationManual = duration;
-            });
-          }
-        }
-      });
-
-      // 1. Recalcular durações e propagar datas (5 passagens para garantir propagação)
-      // Ordenar projectItems para facilitar a propagação sequencial
-      const sortedProjectItems = [...projectItems].sort((a, b) => {
-        if (!a.parentStepId && b.parentStepId) return -1;
-        if (a.parentStepId && !b.parentStepId) return 1;
-        if (a.parentStepId === b.parentStepId) return a.ordem - b.ordem;
-        return 0;
-      });
-
-      for (let pass = 0; pass < 10; pass++) {
-        sortedProjectItems.forEach(item => {
-          const itemIndex = updatedItems.findIndex(i => i.id === item.id);
-          // Se a data estiver travada manualmente, não recalcular datas para este item
-          if (item.dateLockedManual) {
-             // Ainda assim, garantir que as datas manuais sejam aplicadas se existirem
-             if (item.manualStartDate) updatedItems[itemIndex].startDate = item.manualStartDate;
-             if (item.manualEndDate) updatedItems[itemIndex].endDate = item.manualEndDate;
-             return;
-          }
-          
-          // Se stageId for fornecido, só recalcular se for a etapa ou subetapa dela
-          if (stageId && item.id !== stageId && item.parentStepId !== stageId) return;
-
-          if (itemIndex === -1) return;
-
-          let referenceDate: string | null = null;
-          let linkType: 'FS' | 'SS' = updatedItems[itemIndex].linkType || 'FS';
-          
-          // Verificar atividade liberadora (sistema inteligente)
-          const liberatorId = updatedItems[itemIndex].liberatingActivityId;
-          if (liberatorId) {
-            const liberator = updatedItems.find(i => i.id === liberatorId);
-            if (liberator) {
-              if (linkType === 'FS' && liberator.endDate) {
-                const d = parseDateStr(liberator.endDate);
-                if (d) {
-                  referenceDate = addDays(d, 1);
-                }
-              } else if (linkType === 'SS' && liberator.startDate) {
-                referenceDate = parseDateStr(liberator.startDate);
-              }
-            }
-          } else {
-            // Verificar dependências explícitas
-            const deps = updatedItems[itemIndex].dependsOnIds || (updatedItems[itemIndex].dependsOnId ? [updatedItems[itemIndex].dependsOnId] : []);
-            if (deps.length > 0) {
-              let maxEndDate: string | null = null;
-              deps.forEach(depId => {
-                const dep = updatedItems.find(i => i.id === depId);
-                if (dep && dep.endDate) {
-                  const depEnd = parseDateStr(dep.endDate);
-                  if (depEnd && (!maxEndDate || compareDates(depEnd, maxEndDate) > 0)) maxEndDate = depEnd;
-                }
-              });
-              if (maxEndDate) {
-                referenceDate = addDays(maxEndDate, 1);
-              }
-            } else if (updatedItems[itemIndex].parentStepId) {
-              // Sem dependências e é subetapa -> inicia na data do pai
-              const parent = updatedItems.find(i => i.id === updatedItems[itemIndex].parentStepId);
-              if (parent && parent.startDate) {
-                referenceDate = parseDateStr(parent.startDate);
-              } else if (project?.startDate) {
-                referenceDate = parseDateStr(project.startDate);
-              }
-            } else {
-              // Sem dependências e é etapa principal -> inicia na data do projeto
-              if (project?.startDate) {
-                referenceDate = parseDateStr(project.startDate);
-              }
-            }
-          }
-
-          if (updatedItems[itemIndex].manualStartDate) {
-            updatedItems[itemIndex].startDate = updatedItems[itemIndex].manualStartDate;
-          } else if (referenceDate && !updatedItems[itemIndex].startDateManual) {
-            const newStart = referenceDate;
-            if (updatedItems[itemIndex].startDate !== newStart) {
-              updatedItems[itemIndex].startDate = newStart;
-            }
-          }
-
-          // Calcular data final baseada na duração (se não for manual)
-          if (updatedItems[itemIndex].startDate) {
-            if (updatedItems[itemIndex].manualEndDate) {
-              updatedItems[itemIndex].endDate = updatedItems[itemIndex].manualEndDate;
-            } else if (!updatedItems[itemIndex].endDateManual) {
-              const duration = calculateDuration(updatedItems[itemIndex], totalDays);
-              const newEnd = addDays(updatedItems[itemIndex].startDate!, duration - 1);
-              if (updatedItems[itemIndex].endDate !== newEnd) {
-                updatedItems[itemIndex].endDate = newEnd;
-              }
-            }
-          }
-        });
-
-        // Atualizar datas, duração e progresso das etapas principais baseadas nas subetapas
-        mainSteps.forEach(mainStep => {
-          if (mainStep.dateLockedManual) return;
-          
-          const subSteps = projectItems.filter(i => i.parentStepId === mainStep.id);
-          if (subSteps.length > 0) {
-            let minStart: string | null = null;
-            let maxEnd: string | null = null;
-            
-            subSteps.forEach(sub => {
-              const currentSub = updatedItems.find(i => i.id === sub.id);
-              if (currentSub?.startDate) {
-                const s = parseDateStr(currentSub.startDate);
-                if (s && (!minStart || compareDates(s, minStart) < 0)) minStart = s;
-              }
-              if (currentSub?.endDate) {
-                const e = parseDateStr(currentSub.endDate);
-                if (e && (!maxEnd || compareDates(e, maxEnd) > 0)) maxEnd = e;
-              }
-            });
-            
-            const mainIndex = updatedItems.findIndex(i => i.id === mainStep.id);
-            if (mainIndex !== -1) {
-              const item = updatedItems[mainIndex];
-              
-              // 1. Atualizar Datas
-              if (minStart && !item.startDateManual) item.startDate = minStart;
-              if (maxEnd && !item.endDateManual) item.endDate = maxEnd;
-              
-              // 2. Calcular Duração Real (diferença entre menor data inicial e maior data final)
-              if (item.startDate && item.endDate) {
-                const duration = getDaysBetween(item.startDate, item.endDate) + 1;
-                item.durationManual = duration;
-                item.durationManualEnabled = true;
-              }
-
-              // 3. Calcular Progresso (Média ponderada)
-              const totalWeight = subSteps.reduce((acc, sub) => acc + (sub.realWeight || sub.weight || 1), 0);
-              const weightedProgress = subSteps.reduce((acc, sub) => {
-                const weight = sub.realWeight || sub.weight || 1;
-                const progress = sub.progress || 0;
-                return acc + (progress * (weight / (totalWeight || 1)));
-              }, 0);
-              
-              // Regra de bloqueio de 100%: só 100% se todas forem 100%
-              const allCompleted = subSteps.every(sub => (sub.progress || 0) === 100);
-              let finalProgress = Math.round(weightedProgress);
-              if (finalProgress === 100 && !allCompleted) {
-                finalProgress = 99;
-              }
-              
-              item.progress = finalProgress;
-              item.status = finalProgress === 100 ? 'concluido' : (finalProgress > 0 ? 'em_andamento' : 'pendente');
-            }
-          }
-        });
-        }
-      });
-
-    return updatedItems;
+    return recalculateScheduleLogic(items, projectId, stageId, updatedProject, forceFullRecalculate, projects);
   };
 
   // Initial recalculation if needed
@@ -1353,17 +1015,17 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           minStartDate = minDateStr;
         }
 
-        // Se o projeto tem totalDays e startDate, a data final é calculada por eles
-        const calculatedEndDate = (p.totalDays && (p.startDate || minStartDate)) 
-          ? addDays(p.startDate || minStartDate, p.totalDays - 1) 
-          : maxEndDate;
+        const finalStartDate = (p.startDate && p.startDate !== '') ? p.startDate : minStartDate;
+        const finalEndDate = maxEndDate || finalStartDate;
+        const finalTotalDays = (finalStartDate && finalEndDate) ? getDaysBetween(finalStartDate, finalEndDate) : p.totalDays;
 
         return { 
           ...p, 
           progress, 
           status,
-          startDate: (p.startDate && p.startDate !== '') ? p.startDate : minStartDate,
-          endDate: calculatedEndDate,
+          startDate: finalStartDate,
+          endDate: finalEndDate,
+          totalDays: finalTotalDays,
           updatedAt: new Date().toISOString()
         };
       });
@@ -1416,6 +1078,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
             status: project.status,
             startDate: project.startDate,
             endDate: project.endDate,
+            totalDays: project.totalDays,
             updatedAt: now
           };
           batch.set(doc(db, 'projects', project.id), cleanData(calculatedProjectFields), { merge: true });
@@ -1650,7 +1313,16 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     const unsubProjects = onSnapshot(collection(db, 'projects'), (snapshot) => {
       const firestoreProjects = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }) as Project);
       console.log(`[SYNC] Atualizando interface com ${firestoreProjects.length} obras do Firestore.`);
-      setProjects(firestoreProjects);
+      setProjects(prev => {
+        const now = Date.now();
+        return firestoreProjects.map(newProj => {
+          const oldProj = prev.find(p => p.id === newProj.id);
+          if (oldProj && oldProj.lastManualOverrideAt && (now - oldProj.lastManualOverrideAt < 3000)) {
+            return { ...newProj, ...oldProj, lastManualOverrideAt: oldProj.lastManualOverrideAt };
+          }
+          return newProj;
+        });
+      });
       setIsFirestoreReady(true);
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, 'projects');
@@ -1681,7 +1353,17 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
     const unsubSchedule = onSnapshot(collection(db, 'scheduleItems'), (snapshot) => {
       const items = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }) as ScheduleItem);
-      setScheduleItems(items);
+      setScheduleItems(prev => {
+        const now = Date.now();
+        return items.map(newItem => {
+          const oldItem = prev.find(i => i.id === newItem.id);
+          if (oldItem && oldItem.lastManualOverrideAt && (now - oldItem.lastManualOverrideAt < 3000)) {
+            // Preservar edição manual recente durante sync
+            return { ...newItem, ...oldItem, lastManualOverrideAt: oldItem.lastManualOverrideAt };
+          }
+          return newItem;
+        });
+      });
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, 'scheduleItems');
     });
@@ -1763,20 +1445,20 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     const oldProject = projects.find(p => p.id === id);
     if (!oldProject) return;
     
-    const updatedProject = { ...oldProject, ...data };
+    const updatedProject = { ...oldProject, ...data, lastManualOverrideAt: Date.now() };
     
     // Atualização otimista do estado local
     setProjects(prev => prev.map(p => p.id === id ? updatedProject : p));
     
     try {
-      await updateDoc(doc(db, 'projects', id), cleanData(data));
+      await updateDoc(doc(db, 'projects', id), cleanData(updatedProject));
       
-      // Se mudar dias totais ou data de início, força recálculo total do cronograma
+      // Se mudar dias totais, força recálculo total do cronograma
       // Isso irá resetar as durações manuais para que se ajustem ao novo prazo total
-      const forceFullRecalculate = data.totalDays !== undefined || data.startDate !== undefined;
+      const forceFullRecalculate = data.totalDays !== undefined;
       
       if (forceFullRecalculate) {
-        console.log(`[ProjectUpdate] Mudança crítica detectada (totalDays ou startDate). Forçando recálculo total para o projeto ${id}.`);
+        console.log(`[ProjectUpdate] Mudança crítica detectada (totalDays). Forçando recálculo total para o projeto ${id}.`);
       }
       
       // Recalcular apenas para esta obra
@@ -1976,7 +1658,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       ...currentItem, 
       ...data,
       startDateManual: data.startDate !== undefined ? true : currentItem?.startDateManual,
-      endDateManual: data.endDate !== undefined ? true : currentItem?.endDateManual
+      endDateManual: data.endDate !== undefined ? true : currentItem?.endDateManual,
+      lastManualOverrideAt: Date.now()
     } as ScheduleItem;
     setScheduleItems(prev => prev.map(item => item.id === id ? updatedItem : item));
     try {

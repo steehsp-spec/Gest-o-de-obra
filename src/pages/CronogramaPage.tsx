@@ -17,7 +17,8 @@ export default function CronogramaPage() {
     updateScheduleItem,
     deleteScheduleItem,
     updateProject,
-    users
+    users,
+    recalculateAll
   } = useData();
 
   // Local State
@@ -125,9 +126,10 @@ export default function CronogramaPage() {
     startDate: '',
     endDate: '',
     liberatingActivityId: '',
-    linkType: 'FS' as 'FS' | 'SS',
+    linkType: 'FS' as 'FS' | 'SS' | 'FF',
     workFront: '',
-    dateLockedManual: false
+    dateLockedManual: false,
+    canExecuteParallel: false
   });
 
   const handleOpenModal = (item?: any, parentId?: string) => {
@@ -145,7 +147,8 @@ export default function CronogramaPage() {
         liberatingActivityId: item.liberatingActivityId || '',
         linkType: item.linkType || 'FS',
         workFront: item.workFront || '',
-        dateLockedManual: item.dateLockedManual || false
+        dateLockedManual: item.dateLockedManual || false,
+        canExecuteParallel: item.canExecuteParallel || false
       });
     } else {
       setEditingItem(null);
@@ -166,7 +169,8 @@ export default function CronogramaPage() {
         liberatingActivityId: '',
         linkType: 'FS',
         workFront: '',
-        dateLockedManual: false
+        dateLockedManual: false,
+        canExecuteParallel: false
       });
     }
     setIsModalOpen(true);
@@ -183,7 +187,9 @@ export default function CronogramaPage() {
       ordem: editingItem ? editingItem.ordem : (scheduleItems.filter(s => s.projectId === filterProject && s.parentStepId === (parentStepId || undefined)).length),
       startDateManual: formData.dateLockedManual,
       endDateManual: formData.dateLockedManual,
-      dateLockedManual: formData.dateLockedManual
+      dateLockedManual: formData.dateLockedManual,
+      manualStartDate: formData.dateLockedManual ? formData.startDate : undefined,
+      manualEndDate: formData.dateLockedManual ? formData.endDate : undefined
     };
 
     if (editingItem) {
@@ -244,16 +250,23 @@ export default function CronogramaPage() {
     // Group by Stage
     const mainStages = allItems
       .filter(i => !i.parentStepId)
-      .sort((a, b) => compareDates(a.startDate, b.startDate));
+      .sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
 
     const grouped: { stage: string, items: any[] }[] = [];
     
     mainStages.forEach(stage => {
       const stageItems = availableItems.filter(p => p.id === stage.id || p.parentStepId === stage.id);
       if (stageItems.length > 0) {
+        const mainItem = stageItems.find(p => p.id === stage.id);
+        const subItems = stageItems.filter(p => p.id !== stage.id).sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
+        
+        const sortedStageItems = [];
+        if (mainItem) sortedStageItems.push(mainItem);
+        sortedStageItems.push(...subItems);
+
         grouped.push({
           stage: stage.title,
-          items: stageItems.sort((a, b) => compareDates(a.startDate, b.startDate))
+          items: sortedStageItems
         });
       }
     });
@@ -334,6 +347,7 @@ export default function CronogramaPage() {
         onSelectProject={setFilterProject}
         onAddEtapa={() => handleOpenModal()}
         onExportPdf={handleExportPdf}
+        onRecalculate={() => recalculateAll(filterProject, undefined, undefined, undefined, true)}
       />
       
       {filterProject ? (
@@ -619,21 +633,37 @@ export default function CronogramaPage() {
               >
                 <option value="FS">Término-Início (FS)</option>
                 <option value="SS">Início-Início (SS)</option>
+                <option value="FF">Término-Término (FF)</option>
               </select>
             </div>
           </div>
 
-          <div className="flex items-center gap-3 bg-white/5 p-4 rounded-xl border border-white/10">
-            <input 
-              type="checkbox"
-              id="dateLockedManual"
-              checked={formData.dateLockedManual}
-              onChange={(e) => setFormData({...formData, dateLockedManual: e.target.checked})}
-              className="w-5 h-5 rounded border-white/10 bg-[#0B0E14] text-[#F97316] focus:ring-0 focus:ring-offset-0"
-            />
-            <label htmlFor="dateLockedManual" className="text-sm font-bold text-gray-300 cursor-pointer">
-              Travar Datas Manualmente (Ignorar automação para este item)
-            </label>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="flex items-center gap-3 bg-white/5 p-4 rounded-xl border border-white/10">
+              <input 
+                type="checkbox"
+                id="dateLockedManual"
+                checked={formData.dateLockedManual}
+                onChange={(e) => setFormData({...formData, dateLockedManual: e.target.checked})}
+                className="w-5 h-5 rounded border-white/10 bg-[#0B0E14] text-[#F97316] focus:ring-0 focus:ring-offset-0"
+              />
+              <label htmlFor="dateLockedManual" className="text-sm font-bold text-gray-300 cursor-pointer">
+                Travar Datas Manualmente
+              </label>
+            </div>
+            
+            <div className="flex items-center gap-3 bg-white/5 p-4 rounded-xl border border-white/10">
+              <input 
+                type="checkbox"
+                id="canExecuteParallel"
+                checked={formData.canExecuteParallel}
+                onChange={(e) => setFormData({...formData, canExecuteParallel: e.target.checked})}
+                className="w-5 h-5 rounded border-white/10 bg-[#0B0E14] text-[#F97316] focus:ring-0 focus:ring-offset-0"
+              />
+              <label htmlFor="canExecuteParallel" className="text-sm font-bold text-gray-300 cursor-pointer">
+                Pode Executar em Paralelo
+              </label>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-6">
@@ -642,8 +672,9 @@ export default function CronogramaPage() {
               <input 
                 type="date"
                 value={formData.startDate}
+                disabled={!formData.dateLockedManual}
                 onChange={(e) => setFormData({...formData, startDate: e.target.value})}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>
             <div className="space-y-2">
@@ -651,8 +682,9 @@ export default function CronogramaPage() {
               <input 
                 type="date"
                 value={formData.endDate}
+                disabled={!formData.dateLockedManual}
                 onChange={(e) => setFormData({...formData, endDate: e.target.value})}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>
           </div>

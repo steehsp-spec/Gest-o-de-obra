@@ -7,12 +7,14 @@ import { InlineDateInput } from '../InlineDateInput';
 export const CronogramaHeader = ({ 
   onAddEtapa, 
   onExportPdf, 
+  onRecalculate,
   projects,
   selectedProjectId,
   onSelectProject
 }: { 
   onAddEtapa: () => void, 
   onExportPdf: () => void, 
+  onRecalculate: () => void,
   projects: any[],
   selectedProjectId: string,
   onSelectProject: (id: string) => void
@@ -32,8 +34,12 @@ export const CronogramaHeader = ({
       </select>
     </div>
     <div className="flex items-center gap-2">
-      <button onClick={onExportPdf} className="px-4 py-2 bg-white/5 text-gray-300 rounded-lg hover:bg-white/10 text-sm flex items-center gap-2"><Download size={16} /> PDF</button>
-      <button onClick={onAddEtapa} className="px-4 py-2 bg-[#F97316] text-white rounded-lg hover:bg-[#F97316]/90 text-sm flex items-center gap-2"><Plus size={16} /> Nova Etapa</button>
+      <button onClick={onRecalculate} className="px-4 py-2 bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-lg hover:bg-blue-600/30 text-sm flex items-center gap-2 transition-all">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+        Recalcular
+      </button>
+      <button onClick={onExportPdf} className="px-4 py-2 bg-white/5 text-gray-300 rounded-lg hover:bg-white/10 text-sm flex items-center gap-2 transition-all"><Download size={16} /> PDF</button>
+      <button onClick={onAddEtapa} className="px-4 py-2 bg-[#F97316] text-white rounded-lg hover:bg-[#F97316]/90 text-sm flex items-center gap-2 transition-all"><Plus size={16} /> Nova Etapa</button>
     </div>
   </div>
 );
@@ -200,17 +206,28 @@ export const SubStageRow = ({
               Amb: {subStage.workFront}
             </span>
           )}
+          {subStage.canExecuteParallel && (
+            <span className="text-[10px] bg-[#F97316]/10 text-[#F97316] px-1.5 py-0.5 rounded border border-[#F97316]/20 font-medium uppercase tracking-wider flex items-center gap-1">
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v18"/><path d="M16 3v18"/></svg>
+              Paralelo
+            </span>
+          )}
+          {(subStage.dateLockedManual || subStage.durationManualEnabled) && (
+            <span className="text-[10px] bg-[#F97316]/10 text-[#F97316] px-1.5 py-0.5 rounded border border-[#F97316]/20 font-medium uppercase tracking-wider">
+              Manual
+            </span>
+          )}
         </div>
       </div>
       
-      <div className="text-[11px] text-gray-400 flex flex-col gap-1">
+      <div className="text-[11px] text-gray-400 flex flex-col gap-1 relative">
         <div className="flex items-center gap-1.5">
-          <Calendar size={12} className="text-[#F97316]/50" />
+          <Calendar size={12} className={subStage.dateLockedManual ? "text-[#F97316]" : "text-[#F97316]/50"} />
           <InlineDateInput 
             value={subStage.startDate || ''} 
             onUpdate={async (date) => {
               await updateScheduleItem(subStage.id, { 
-                startDate: date, 
+                manualStartDate: date, 
                 startDateManual: true, 
                 dateLockedManual: true 
               });
@@ -223,13 +240,31 @@ export const SubStageRow = ({
             value={subStage.endDate || ''} 
             onUpdate={async (date) => {
               await updateScheduleItem(subStage.id, { 
-                endDate: date, 
+                manualEndDate: date, 
                 endDateManual: true, 
                 dateLockedManual: true 
               });
             }} 
           />
         </div>
+        {subStage.dateLockedManual && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              updateScheduleItem(subStage.id, { 
+                dateLockedManual: false,
+                startDateManual: false,
+                endDateManual: false,
+                manualStartDate: undefined,
+                manualEndDate: undefined
+              });
+            }}
+            className="absolute -right-6 top-1/2 -translate-y-1/2 text-[9px] bg-white/10 hover:bg-[#F97316]/20 text-gray-400 hover:text-[#F97316] px-1.5 py-0.5 rounded transition-all"
+            title="Voltar para cálculo automático"
+          >
+            Auto
+          </button>
+        )}
       </div>
 
       <div className="flex flex-col gap-3 py-1">
@@ -322,41 +357,6 @@ export const StageBlock = ({
       }
     ];
 
-    // Redistribute sub-stages by scaling their relative timing within the new stage duration
-    if (subStages && subStages.length > 0 && duration > 0) {
-      const scale = newDuration / duration;
-
-      subStages.forEach((sub) => {
-        if (!sub.startDate || !sub.endDate) return;
-
-        const startOffset = getDaysBetween(stage.startDate!, sub.startDate) - 1;
-        const endOffset = getDaysBetween(stage.startDate!, sub.endDate) - 1;
-
-        let newStartOffset = Math.round(startOffset * scale);
-        let newEndOffset = Math.round(endOffset * scale);
-        
-        // Ensure it stays within the new stage bounds and maintains at least 1 day duration
-        newStartOffset = Math.min(newDuration - 1, Math.max(0, newStartOffset));
-        newEndOffset = Math.min(newDuration - 1, Math.max(newStartOffset, newEndOffset));
-
-        const newSubStart = addDays(stage.startDate!, newStartOffset);
-        const newSubEnd = addDays(stage.startDate!, newEndOffset);
-        const newSubDuration = getDaysBetween(newSubStart, newSubEnd);
-
-        updates.push({
-          id: sub.id,
-          updates: {
-            startDate: newSubStart,
-            endDate: newSubEnd,
-            durationManual: newSubDuration,
-            durationManualEnabled: true,
-            startDateManual: true,
-            endDateManual: true
-          }
-        });
-      });
-    }
-
     batchUpdateScheduleItems(updates);
   };
 
@@ -383,7 +383,7 @@ export const StageBlock = ({
           <div className="flex-1 min-w-0 overflow-visible">
             <h3 className="font-black text-white text-lg tracking-tight uppercase whitespace-nowrap overflow-visible text-clip">
               {stage.title}
-              <span className="ml-2 text-sm text-gray-400 font-medium normal-case whitespace-nowrap">
+              <span className="ml-2 text-sm text-gray-400 font-medium normal-case whitespace-nowrap flex items-center gap-2">
                 — 
                 <input 
                   type="number" 
@@ -397,9 +397,26 @@ export const StageBlock = ({
                       e.currentTarget.blur();
                     }
                   }}
-                  className="w-12 bg-transparent border-b border-white/20 text-center text-white focus:outline-none focus:border-[#F97316] mx-1"
+                  className={`w-12 bg-transparent border-b text-center text-white focus:outline-none focus:border-[#F97316] mx-1 ${stage.durationManualEnabled ? 'border-[#F97316] text-[#F97316]' : 'border-white/20'}`}
                 />
                 dias
+                {stage.durationManualEnabled && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      updateScheduleItem(stage.id, { durationManualEnabled: false, durationManual: undefined });
+                    }}
+                    className="text-[9px] bg-white/10 hover:bg-[#F97316]/20 text-gray-400 hover:text-[#F97316] px-1.5 py-0.5 rounded transition-all ml-1"
+                    title="Voltar para cálculo automático"
+                  >
+                    Auto
+                  </button>
+                )}
+                {(stage.dateLockedManual || stage.durationManualEnabled) && (
+                  <span className="text-[10px] bg-[#F97316]/10 text-[#F97316] px-1.5 py-0.5 rounded border border-[#F97316]/20 font-medium uppercase tracking-wider ml-2">
+                    Manual
+                  </span>
+                )}
               </span>
             </h3>
           </div>

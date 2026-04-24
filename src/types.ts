@@ -36,6 +36,7 @@ export interface Project {
   location?: string;
   updatedAt?: string;
   createdAt?: string;
+  lastManualOverrideAt?: number;
 }
 
 export interface ProjectTemplate {
@@ -111,8 +112,9 @@ export interface ScheduleItem {
   endDateManual?: boolean;
   baseDurationDays?: number;
   liberatingActivityId?: string;
-  linkType?: 'FS' | 'SS'; // FS: Finish-to-Start, SS: Start-to-Start
+  linkType?: 'FS' | 'SS' | 'FF'; // FS: Finish-to-Start, SS: Start-to-Start, FF: Finish-to-Finish
   dateLockedManual?: boolean;
+  canExecuteParallel?: boolean;
   activityType?: string;
   durationManual?: number;
   durationManualEnabled?: boolean;
@@ -120,6 +122,7 @@ export interface ScheduleItem {
   manualEndDate?: string;
   manualDays?: number;
   manualProgress?: number;
+  lastManualOverrideAt?: number;
 }
 
 export type TransactionType = 'entrada' | 'saida';
