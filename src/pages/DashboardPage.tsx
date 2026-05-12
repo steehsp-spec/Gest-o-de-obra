@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { HardHat, AlertCircle, TrendingUp, Clock, Download, Briefcase, FileText, DollarSign, CheckCircle2 } from 'lucide-react';
+import { HardHat, AlertCircle, TrendingUp, Clock, Download, Briefcase, FileText, DollarSign, CheckCircle2, PieChart } from 'lucide-react';
 import { useData } from '../contexts/DataContext';
 import { exportToPdf } from '../utils/pdfExport';
 
@@ -39,23 +39,30 @@ const CircularProgress = ({ percentage = 0 }: { percentage: number }) => {
 };
 
 export default function DashboardPage() {
-  const { projects, pendencies, scheduleItems, transactions, currentUser } = useData();
+  const { obras, pendencias, tarefas, transacoes, currentUser } = useData();
 
   const stats = useMemo(() => {
-    const activeProjects = projects.filter(p => p.status === 'em_execucao').length;
-    const criticalPendencies = pendencies.filter(p => p.status === 'aberta' && (p.priority === 'critica' || p.priority === 'alta')).length;
-    const lockedItems = scheduleItems.filter(s => pendencies.some(p => p.scheduleItemId === s.id && p.status === 'aberta')).length;
+    const activeProjects = obras.filter(p => p.status === 'em_execucao').length;
+    const criticalPendencies = pendencias.filter(p => p.status === 'aberta' && (p.priority === 'critica' || p.priority === 'alta')).length;
+    const lockedItems = tarefas.filter(s => pendencias.some(p => (p.tarefaId === s.id || p.scheduleItemId === s.id) && p.status === 'aberta'));
     
-    const totalIncome = transactions.filter(t => t.type === 'entrada').reduce((acc, t) => acc + t.amount, 0);
-    const totalExpense = transactions.filter(t => t.type === 'saida').reduce((acc, t) => acc + t.amount, 0);
-    const balance = totalIncome - totalExpense;
+    const totalIncome = transacoes.filter(t => t.type === 'entrada').reduce((acc, t) => acc + t.amount, 0);
+    const totalExpense = transacoes.filter(t => t.type === 'saida').reduce((acc, t) => acc + t.amount, 0);
+    const totalBudget = obras.reduce((acc, p) => acc + (p.budget || 0), 0);
 
-    const projectSummaries = projects.map(project => {
-      const projectPendencies = pendencies.filter(p => p.projectId === project.id && p.status === 'aberta');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStr = today.toISOString().split('T')[0];
+
+    const projectSummaries = obras.map(project => {
+      const projectTransactions = transacoes.filter(t => t.obraId === project.id);
+      const projectExpense = projectTransactions.filter(t => t.type === 'saida').reduce((acc, t) => acc + t.amount, 0);
+      const projectBudget = project.budget || 0;
+      const financialProgress = projectBudget > 0 ? Math.min(100, (projectExpense / projectBudget) * 100) : 0;
+      const remainingBalance = projectBudget - projectExpense;
       
-      const today = new Date();
-      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-
+      const projectPendencies = pendencias.filter(p => p.obraId === project.id && p.status === 'aberta');
+      
       let calculatedStatus = project.status as string;
       if (project.progress === 100) {
         calculatedStatus = 'concluida';
@@ -65,6 +72,9 @@ export default function DashboardPage() {
 
       return {
         ...project,
+        expense: projectExpense,
+        financialProgress,
+        remainingBalance,
         pendenciesCount: projectPendencies.length,
         calculatedStatus
       };
@@ -72,19 +82,36 @@ export default function DashboardPage() {
 
     const totalProgressSum = projectSummaries.reduce((acc, p) => acc + (p.progress || 0), 0);
     const overallProgress = projectSummaries.length > 0 ? Math.round(totalProgressSum / projectSummaries.length) : 0;
+    
+    const totalFinancialProgress = totalBudget > 0 ? Math.round((totalExpense / totalBudget) * 100) : 0;
+
+    // Alertas de atraso
+    const delayedItems = tarefas.filter(item => {
+      if (item.status === 'concluido' || !item.endDate) return false;
+      return item.endDate < todayStr;
+    }).map(item => {
+      const project = obras.find(p => p.id === item.obraId);
+      return {
+        ...item,
+        projectName: project?.name || 'Obra Desconhecida'
+      };
+    }).sort((a, b) => (a.endDate! < b.endDate! ? -1 : 1));
 
     return {
       activeProjects,
       criticalPendencies,
-      lockedItems,
-      balance,
+      lockedItemsCount: lockedItems.length,
+      balance: totalBudget - totalExpense,
       totalIncome,
       totalExpense,
+      totalBudget,
       overallProgress,
+      totalFinancialProgress,
       projectSummaries,
-      totalPendencies: pendencies.filter(p => p.status === 'aberta').length
+      totalPendencies: pendencias.filter(p => p.status === 'aberta').length,
+      delayedItems
     };
-  }, [projects, pendencies, scheduleItems, transactions]);
+  }, [obras, pendencias, tarefas, transacoes]);
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
@@ -97,252 +124,234 @@ export default function DashboardPage() {
   };
 
   const handleExportPdf = () => {
-    const head = [['Projeto', 'Pendências', 'Fim Previsto', 'Status', 'Progresso']];
+    const head = [['Obra', 'Status', 'Prog. Físico', 'Prog. Financeiro', 'Prazo', 'Saldo']];
     const body = stats.projectSummaries.map(p => [
       p.name,
-      p.pendenciesCount.toString(),
-      formatDate(p.endDate),
       p.calculatedStatus.replace('_', ' ').toUpperCase(),
-      `${p.progress}%`
+      `${p.progress}%`,
+      `${p.financialProgress.toFixed(1)}%`,
+      formatDate(p.endDate),
+      formatCurrency(p.remainingBalance)
     ]);
 
     exportToPdf({
-      title: 'Resumo Geral das Obras',
+      title: 'Dashboard Executivo de Obras',
       userName: currentUser?.name,
-      filename: `dashboard-obras-${new Date().toISOString().split('T')[0]}.pdf`,
+      filename: `dashboard-executivo-${new Date().toISOString().split('T')[0]}.pdf`,
       head,
       body,
       summary: [
         { label: 'Obras Ativas', value: stats.activeProjects.toString() },
-        { label: 'Pendências Críticas', value: stats.criticalPendencies.toString() },
-        { label: 'Progresso Geral', value: `${stats.overallProgress}%` }
+        { label: 'Investimento Total', value: formatCurrency(stats.totalBudget) },
+        { label: 'Progresso Físico Geral', value: `${stats.overallProgress}%` },
+        { label: 'Progresso Financeiro Geral', value: `${stats.totalFinancialProgress}%` }
       ]
     });
   };
 
   const cards = [
     { 
-      title: 'Obras Ativas', 
+      title: 'Status Geral', 
       value: stats.activeProjects.toString(), 
       icon: <HardHat size={24} />, 
-      trend: 'Em Andamento',
+      trend: `${stats.activeProjects} obras em execução`,
       color: 'text-blue-500',
       bg: 'bg-blue-500/10'
     },
     { 
-      title: 'Pendências Críticas', 
-      value: stats.criticalPendencies.toString(), 
-      icon: <AlertCircle size={24} />, 
-      trend: 'Críticas',
-      color: 'text-red-500',
-      bg: 'bg-red-500/10'
+      title: 'Progresso Físico', 
+      value: `${stats.overallProgress}%`, 
+      icon: <TrendingUp size={24} />, 
+      trend: 'Média ponderada',
+      color: 'text-emerald-500',
+      bg: 'bg-emerald-500/10'
     },
     { 
-      title: 'Itens Travados', 
-      value: stats.lockedItems.toString(), 
-      icon: <AlertCircle size={24} />, 
-      trend: 'Pendências',
+      title: 'Progresso Financeiro', 
+      value: `${stats.totalFinancialProgress}%`, 
+      icon: <DollarSign size={24} />, 
+      trend: 'Gasto vs Orçado',
       color: 'text-amber-500',
       bg: 'bg-amber-500/10'
     },
     { 
-      title: 'Progresso Geral', 
-      value: `${stats.overallProgress}%`, 
-      icon: <TrendingUp size={24} />, 
-      trend: 'De Todas Obras',
-      color: 'text-emerald-500',
-      bg: 'bg-emerald-500/10'
+      title: 'Saldo Orçado', 
+      value: formatCurrency(stats.balance), 
+      icon: <DollarSign size={24} />, 
+      trend: 'Disponível para gasto',
+      color: 'text-purple-500',
+      bg: 'bg-purple-500/10'
     },
   ];
 
   return (
-    <div className="p-4 lg:p-8 max-w-7xl mx-auto">
-      {/* 1. LINHA SUPERIOR DE CARDS RESUMO */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6 mb-8">
+    <div className="p-4 lg:p-8 max-w-7xl mx-auto space-y-6 lg:space-y-8">
+      {/* Header com Ações */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl lg:text-3xl font-black text-white uppercase tracking-tighter">Dashboard <span className="text-[#F97316]">Executivo</span></h1>
+          <p className="text-gray-500 text-xs lg:text-sm">Visão geral do desempenho físico e financeiro de suas obras</p>
+        </div>
+        <button 
+          onClick={handleExportPdf}
+          className="bg-[#F97316] hover:bg-[#EA580C] text-white px-4 py-2 lg:px-6 lg:py-2.5 rounded-xl flex items-center justify-center gap-2 transition-all text-xs lg:text-sm font-bold shadow-lg shadow-[#F97316]/20"
+        >
+          <Download size={18} />
+          <span>Exportar Relatório</span>
+        </button>
+      </div>
+
+      {/* Cards de Resumo */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
         {cards.map((card, index) => (
-          <div key={index} className="bg-[#161B22] p-4 lg:p-6 rounded-2xl border border-white/10 hover:border-white/20 transition-all flex flex-col justify-between h-32 lg:h-36">
-            <div className="flex items-center gap-3 mb-2">
-              <div className={`p-2 rounded-lg ${card.bg} ${card.color}`}>
-                {React.cloneElement(card.icon as React.ReactElement, { size: 20 } as any)}
-              </div>
-              <h3 className="text-gray-400 text-xs lg:text-sm font-medium">{card.title}</h3>
+          <div key={index} className="bg-[#161B22] p-5 lg:p-6 rounded-2xl border border-white/10 hover:border-[#F97316]/30 transition-all group">
+            <div className={`w-10 h-10 lg:w-12 lg:h-12 rounded-xl ${card.bg} ${card.color} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform`}>
+              {card.icon}
             </div>
             <div>
-              <p className="text-2xl lg:text-3xl font-bold text-white tracking-tight mb-1">{card.value}</p>
-              <p className="text-[10px] lg:text-xs text-gray-500">{card.trend}</p>
+              <h3 className="text-gray-500 text-[10px] lg:text-xs font-black uppercase tracking-widest mb-1">{card.title}</h3>
+              <p className="text-xl lg:text-2xl font-black text-white mb-1">{card.value}</p>
+              <p className="text-[10px] lg:text-xs text-gray-500 font-medium">{card.trend}</p>
             </div>
           </div>
         ))}
       </div>
 
-      {/* 2. BLOCO PRINCIPAL: RESUMO GERAL DAS OBRAS */}
-      <div className="bg-[#161B22] rounded-2xl border border-white/10 overflow-hidden mb-8">
-        <div className="p-4 lg:p-6 border-b border-white/10 flex items-center justify-between bg-white/5">
-          <h2 className="text-base lg:text-lg font-bold text-white">Resumo Geral das Obras</h2>
-          <button 
-            onClick={handleExportPdf}
-            className="bg-[#161B22] hover:bg-white/10 border border-white/10 text-white px-3 py-1.5 lg:px-4 lg:py-2 rounded-lg flex items-center gap-2 transition-colors text-xs lg:text-sm font-semibold"
-          >
-            <Download size={14} className="lg:w-4 lg:h-4" />
-            <span className="hidden sm:inline">Exportar PDF</span>
-          </button>
-        </div>
-
-        {/* Mobile View for Projects */}
-        <div className="lg:hidden divide-y divide-white/5">
-          {stats.projectSummaries.map((project) => (
-            <div key={project.id} className="p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="font-bold text-white text-base">{project.name}</h3>
-                <span className={`inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full ${
-                  project.calculatedStatus === 'em_execucao' ? 'bg-blue-500/10 text-blue-500 border border-blue-500/20' : 
-                  project.calculatedStatus === 'concluida' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' :
-                  project.calculatedStatus === 'atrasada' ? 'bg-red-500/10 text-red-500 border border-red-500/20' :
-                  'bg-gray-500/10 text-gray-400 border border-gray-500/20'
-                }`}>
-                  {project.calculatedStatus === 'concluida' && <CheckCircle2 size={8} />}
-                  {project.calculatedStatus.replace('_', ' ')}
-                </span>
-              </div>
-              
-              <div className="flex items-center justify-between text-xs text-gray-400">
-                <div className="flex items-center gap-2">
-                  <Clock size={12} />
-                  <span>Prazo: {formatDate(project.endDate)}</span>
-                </div>
-                <div className={project.pendenciesCount > 0 ? 'text-amber-500/80' : ''}>
-                  {project.pendenciesCount} {project.pendenciesCount === 1 ? 'pendência' : 'pendências'}
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <div className="flex-1 bg-white/5 h-2 rounded-full overflow-hidden">
-                  <div 
-                    className={`h-full rounded-full ${
-                      project.progress === 100 ? 'bg-emerald-500' : 'bg-blue-500'
-                    }`}
-                    style={{ width: `${project.progress}%` }}
-                  ></div>
-                </div>
-                <span className="text-sm font-bold text-white w-10 text-right">{project.progress}%</span>
-              </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8">
+        {/* Lista de Obras e Desempenho */}
+        <div className="lg:col-span-2 space-y-6">
+          <div className="bg-[#161B22] rounded-2xl border border-white/10 overflow-hidden">
+            <div className="p-4 lg:p-6 border-b border-white/10 bg-white/5 flex items-center justify-between">
+              <h2 className="text-sm lg:text-base font-black text-white uppercase tracking-widest">Acompanhamento por Obra</h2>
             </div>
-          ))}
-          {stats.projectSummaries.length === 0 && (
-            <div className="p-8 text-center text-gray-500">
-              Nenhuma obra cadastrada.
-            </div>
-          )}
-        </div>
-
-        {/* Desktop Table View */}
-        <div className="hidden lg:block overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-white/10 text-xs uppercase tracking-wider text-gray-500">
-                <th className="p-4 font-semibold">Projeto</th>
-                <th className="p-4 font-semibold text-center">Status</th>
-                <th className="p-4 font-semibold text-center">Prazo</th>
-                <th className="p-4 font-semibold text-right">Progresso</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
+            <div className="divide-y divide-white/5">
               {stats.projectSummaries.map((project) => (
-                <tr key={project.id} className="hover:bg-white/[0.02] transition-colors group">
-                  <td className="p-4">
-                    <div className="font-bold text-white text-base mb-1">{project.name}</div>
-                    <div className="text-xs text-gray-500 flex items-center gap-2">
-                      <span className={project.pendenciesCount > 0 ? 'text-amber-500/80' : ''}>
-                        {project.pendenciesCount} {project.pendenciesCount === 1 ? 'pendência' : 'pendências'}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="p-4 text-center">
-                    <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full ${
-                      project.calculatedStatus === 'em_execucao' ? 'bg-blue-500/10 text-blue-500 border border-blue-500/20' : 
-                      project.calculatedStatus === 'concluida' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' :
-                      project.calculatedStatus === 'atrasada' ? 'bg-red-500/10 text-red-500 border border-red-500/20' :
-                      'bg-gray-500/10 text-gray-400 border border-gray-500/20'
-                    }`}>
-                      {project.calculatedStatus === 'concluida' && <CheckCircle2 size={10} />}
-                      {project.calculatedStatus.replace('_', ' ')}
-                    </span>
-                  </td>
-                  <td className="p-4 text-center text-sm text-gray-300">
-                    {formatDate(project.endDate)}
-                  </td>
-                  <td className="p-4">
-                    <div className="flex items-center justify-end gap-4">
-                      <div className="w-32 bg-white/5 h-2 rounded-full overflow-hidden hidden sm:block">
-                        <div 
-                          className={`h-full rounded-full ${
-                            project.progress === 100 ? 'bg-emerald-500' : 'bg-blue-500'
-                          }`}
-                          style={{ width: `${project.progress}%` }}
-                        ></div>
+                <div key={project.id} className="p-4 lg:p-6 hover:bg-white/[0.02] transition-colors">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                    <div>
+                      <h3 className="text-base lg:text-lg font-black text-white mb-1 uppercase tracking-tight">{project.name}</h3>
+                      <div className="flex flex-wrap gap-2 items-center">
+                        <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${
+                          project.calculatedStatus === 'em_execucao' ? 'bg-blue-500/10 text-blue-500 border-blue-500/20' : 
+                          project.calculatedStatus === 'concluida' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' :
+                          project.calculatedStatus === 'atrasada' ? 'bg-red-500/10 text-red-500 border-red-500/20' :
+                          'bg-gray-500/10 text-gray-400 border-gray-500/20'
+                        }`}>
+                          {project.calculatedStatus.replace('_', ' ')}
+                        </span>
+                        <span className="text-[10px] text-gray-500 font-bold uppercase">Fim: {formatDate(project.endDate)}</span>
                       </div>
-                      <span className="text-xl font-bold text-white w-12 text-right">{project.progress}%</span>
                     </div>
-                  </td>
-                </tr>
+                    <div className="text-right">
+                      <p className="text-[10px] text-gray-500 font-bold uppercase mb-0.5">Saldo Restante</p>
+                      <p className={`text-sm lg:text-base font-black ${project.remainingBalance >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                        {formatCurrency(project.remainingBalance)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                    {/* Progresso Físico */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest">
+                        <span className="text-gray-500">Progresso Físico</span>
+                        <span className="text-white">{project.progress}%</span>
+                      </div>
+                      <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-blue-500 rounded-full transition-all duration-1000"
+                          style={{ width: `${project.progress}%` }}
+                        />
+                      </div>
+                    </div>
+                    {/* Progresso Financeiro */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest">
+                        <span className="text-gray-500">Gasto vs Orçamentário</span>
+                        <span className={project.financialProgress > 100 ? 'text-red-500' : 'text-amber-500'}>
+                          {project.financialProgress.toFixed(1)}%
+                        </span>
+                      </div>
+                      <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+                        <div 
+                          className={`h-full rounded-full transition-all duration-1000 ${
+                            project.financialProgress > 100 ? 'bg-red-500' : 'bg-amber-500'
+                          }`}
+                          style={{ width: `${Math.min(100, project.financialProgress)}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
               ))}
               {stats.projectSummaries.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="p-8 text-center text-gray-500">
-                    Nenhuma obra cadastrada.
-                  </td>
-                </tr>
+                <div className="p-12 text-center text-gray-500 italic">
+                  Nenhuma obra cadastrada no sistema.
+                </div>
               )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* 4. BLOCO INFERIOR: PROGRESSO TOTAL DAS OBRAS */}
-      <div className="bg-[#161B22] rounded-2xl border border-white/10 p-4 lg:p-6 flex flex-col lg:flex-row items-center justify-between gap-6 lg:gap-8">
-        <div className="w-full lg:flex-1">
-          <h3 className="text-base lg:text-lg font-bold text-white mb-4 lg:mb-6">Progresso Total das Obras</h3>
-          <div className="grid grid-cols-2 gap-4 lg:gap-6">
-            <div className="flex items-center gap-3">
-              <Briefcase className="text-gray-500 lg:w-5 lg:h-5" size={18} />
-              <div>
-                <p className="text-[10px] lg:text-sm text-gray-400">Obras Totais</p>
-                <p className="text-lg lg:text-xl font-bold text-white">{projects.length}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <FileText className="text-gray-500 lg:w-5 lg:h-5" size={18} />
-              <div>
-                <p className="text-[10px] lg:text-sm text-gray-400">Pendências Totais</p>
-                <p className="text-lg lg:text-xl font-bold text-white">{stats.totalPendencies}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <DollarSign className="text-emerald-500 lg:w-5 lg:h-5" size={18} />
-              <div>
-                <p className="text-[10px] lg:text-sm text-gray-400">Entradas</p>
-                <p className="text-base lg:text-lg font-bold text-emerald-500">{formatCurrency(stats.totalIncome)}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <DollarSign className="text-red-500 lg:w-5 lg:h-5" size={18} />
-              <div>
-                <p className="text-[10px] lg:text-sm text-gray-400">Saídas</p>
-                <p className="text-base lg:text-lg font-bold text-red-500">{formatCurrency(stats.totalExpense)}</p>
-              </div>
             </div>
           </div>
         </div>
-        
-        <div className="w-full lg:w-auto flex items-center justify-center gap-6 bg-white/5 p-4 lg:p-6 rounded-xl border border-white/5">
-          <CircularProgress percentage={stats.overallProgress} />
-          <div className="hidden sm:block">
-            <p className="text-white font-bold text-lg mb-1">Obras Totais: {projects.length}</p>
-            <p className="text-gray-400 text-sm">Pendências Totais: {stats.totalPendencies}</p>
+
+        {/* Sidebar: Alertas e Notificações */}
+        <div className="space-y-6">
+          <div className="bg-[#161B22] rounded-2xl border border-white/10 overflow-hidden">
+            <div className="p-4 border-b border-white/10 bg-white/5 flex items-center gap-2">
+              <AlertCircle size={16} className="text-red-500" />
+              <h2 className="text-xs font-black text-white uppercase tracking-widest">Alertas de Atraso</h2>
+            </div>
+            <div className="p-2 lg:p-4 space-y-3 max-h-[400px] overflow-y-auto custom-scrollbar">
+              {stats.delayedItems.length > 0 ? (
+                stats.delayedItems.map((item) => (
+                  <div key={item.id} className="p-3 bg-red-500/5 border border-red-500/10 rounded-xl space-y-1 group hover:bg-red-500/10 transition-colors">
+                    <p className="text-[10px] text-red-500 font-black uppercase tracking-tighter">{item.projectName}</p>
+                    <p className="text-[11px] lg:text-xs font-bold text-white line-clamp-2">{item.title}</p>
+                    <div className="flex items-center justify-between pt-1">
+                        <span className="text-[9px] text-gray-500 font-bold uppercase">Vencido em {formatDate(item.endDate!)}</span>
+                        <span className="text-[9px] bg-red-500 text-white px-1.5 py-0.5 rounded font-black uppercase tracking-widest">Delayed</span>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="p-8 text-center space-y-2">
+                  <div className="w-10 h-10 bg-emerald-500/10 text-emerald-500 rounded-full flex items-center justify-center mx-auto">
+                    <CheckCircle2 size={24} />
+                  </div>
+                  <p className="text-[10px] lg:text-xs text-gray-500 font-bold uppercase italic tracking-widest">Tudo em dia!</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-[#161B22] rounded-2xl border border-white/10 p-5 lg:p-6 space-y-4">
+             <div className="flex items-center gap-2">
+                <PieChart size={18} className="text-[#F97316]" />
+                <h3 className="text-xs font-black text-white uppercase tracking-widest">Resumo de Saúde</h3>
+             </div>
+             
+             <div className="flex items-center gap-4">
+                <CircularProgress percentage={stats.overallProgress} />
+                <div className="space-y-1">
+                   <p className="text-lg font-black text-white">{stats.overallProgress}%</p>
+                   <p className="text-[10px] text-gray-500 font-bold uppercase leading-tight">Progresso Físico Médio</p>
+                </div>
+             </div>
+
+             <div className="pt-4 border-t border-white/5 space-y-3">
+                <div className="flex items-center justify-between">
+                   <span className="text-[10px] text-gray-500 font-bold uppercase">Pendências Abertas</span>
+                   <span className="text-xs font-black text-white">{stats.totalPendencies}</span>
+                </div>
+                <div className="flex items-center justify-between text-red-500">
+                   <span className="text-[10px] font-bold uppercase">Etapas Atrasadas</span>
+                   <span className="text-xs font-black">{stats.delayedItems.length}</span>
+                </div>
+             </div>
           </div>
         </div>
       </div>
     </div>
   );
 }
+
 

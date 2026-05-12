@@ -3,131 +3,46 @@ import { addDays, getDaysBetween, compareDates, parseDateStr } from './dateUtils
 
 export const recalculateScheduleLogic = (
   items: ScheduleItem[],
-  projectId: string | undefined,
+  obraId: string | undefined,
   stageId: string | undefined,
   updatedProject: Project | undefined,
   forceFullRecalculate: boolean | undefined,
   projects: Project[]
 ): ScheduleItem[] => {
   const updatedItems = items.map(item => ({ ...item }));
-  const projectIds = projectId ? [projectId] : Array.from(new Set(updatedItems.map(i => i.projectId)));
+  const obraIds = obraId ? [obraId] : Array.from(new Set(updatedItems.map(i => i.obraId)));
 
-  projectIds.forEach(pId => {
+  obraIds.forEach(pId => {
     const project = (updatedProject && updatedProject.id === pId) ? updatedProject : projects.find(p => p.id === pId);
     if (!project) return;
     
     const totalDays = project.totalDays || 0;
-    const projectItems = updatedItems.filter(i => i.projectId === pId);
+    const projectItems = updatedItems.filter(i => i.obraId === pId);
     const mainSteps = projectItems.filter(i => !i.parentStepId).sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
 
-    // 1. Distribuir dias totais da obra entre as etapas principais
-    if (forceFullRecalculate && !stageId && totalDays > 0) {
-      const manualMainSteps = mainSteps.filter(s => s.durationManualEnabled && s.durationManual !== undefined);
-      
-      manualMainSteps.forEach(step => {
-        const itemIndex = updatedItems.findIndex(i => i.id === step.id);
-        if (itemIndex !== -1) {
-          if ((updatedItems[itemIndex].durationManual || 0) > totalDays) {
-            updatedItems[itemIndex].durationManual = totalDays;
-          }
-          const newWeight = ((updatedItems[itemIndex].durationManual || 0) / totalDays) * 100;
-          updatedItems[itemIndex].weight = Number(newWeight.toFixed(2));
-        }
-      });
-
-      const manualDays = manualMainSteps.reduce((acc, s) => acc + (s.durationManual || 0), 0);
-      const remainingDays = Math.max(0, totalDays - manualDays);
-      const autoMainSteps = mainSteps.filter(s => !s.durationManualEnabled);
-      const totalAutoWeight = autoMainSteps.reduce((acc, s) => acc + (s.weight || 0), 0);
-
-      if (totalAutoWeight > 0) {
-        let allocatedAutoDays = 0;
-        autoMainSteps.forEach((step, idx) => {
-          const itemIndex = updatedItems.findIndex(i => i.id === step.id);
-          if (itemIndex === -1) return;
-          
-          let duration = 0;
-          if (idx === autoMainSteps.length - 1) {
-            duration = Math.max(1, remainingDays - allocatedAutoDays);
-          } else {
-            duration = Math.max(1, Math.round(remainingDays * (step.weight / totalAutoWeight)));
-          }
-          allocatedAutoDays += duration;
-          updatedItems[itemIndex].durationManual = duration;
-        });
+    // 1. Garantir que todas as etapas tenham uma duração base inicial se não houver
+    mainSteps.forEach(step => {
+      const itemIndex = updatedItems.findIndex(i => i.id === step.id);
+      if (itemIndex !== -1 && !updatedItems[itemIndex].durationManual) {
+        updatedItems[itemIndex].durationManual = 1;
       }
-    } else {
-      // Ensure all main steps have at least durationManual = 1 if undefined
-      mainSteps.forEach(step => {
-        const itemIndex = updatedItems.findIndex(i => i.id === step.id);
-        if (itemIndex !== -1 && updatedItems[itemIndex].durationManual === undefined) {
-          updatedItems[itemIndex].durationManual = 1;
-        }
-      });
-    }
+    });
 
-    // 2. Distribuir dias dentro de cada etapa entre as subtarefas
+    // 2. Distribuir dias dentro de cada etapa entre as subtarefas somente se a etapa pai for a base
     mainSteps.forEach(mainStep => {
       const mainStepIndex = updatedItems.findIndex(i => i.id === mainStep.id);
-      if (mainStepIndex !== -1) {
-        updatedItems[mainStepIndex].realWeight = updatedItems[mainStepIndex].weight || 0;
-      }
+      if (mainStepIndex === -1) return;
+      
+      updatedItems[mainStepIndex].realWeight = updatedItems[mainStepIndex].weight || 0;
 
       const subSteps = projectItems.filter(i => i.parentStepId === mainStep.id).sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
       if (subSteps.length > 0) {
-        // Map complexity to weight
         subSteps.forEach(sub => {
           const subIndex = updatedItems.findIndex(i => i.id === sub.id);
-          if (subIndex !== -1) {
-            let compWeight = 1;
-            if (sub.complexity === 'media') compWeight = 2;
-            if (sub.complexity === 'alta') compWeight = 3;
-            updatedItems[subIndex].weight = compWeight;
+          if (subIndex !== -1 && !updatedItems[subIndex].durationManual) {
+            updatedItems[subIndex].durationManual = 1;
           }
         });
-
-        const totalComplexityWeight = subSteps.reduce((acc, sub) => acc + (updatedItems.find(i => i.id === sub.id)?.weight || 1), 0);
-        
-        subSteps.forEach(sub => {
-          const subIndex = updatedItems.findIndex(i => i.id === sub.id);
-          if (subIndex !== -1) {
-            const complexityWeight = updatedItems[subIndex].weight || 1;
-            const parentWeight = updatedItems[mainStepIndex].weight || 0;
-            const realWeight = parentWeight * (complexityWeight / (totalComplexityWeight || 1));
-            updatedItems[subIndex].realWeight = Number(realWeight.toFixed(2));
-            
-            if (updatedItems[subIndex].durationManual === undefined) {
-               updatedItems[subIndex].durationManual = 1;
-            }
-          }
-        });
-
-        const stageDuration = updatedItems[mainStepIndex].durationManual || 1;
-        const manualSubSteps = subSteps.filter(s => s.durationManualEnabled && s.durationManual !== undefined);
-        
-        const manualSubDays = manualSubSteps.reduce((acc, s) => acc + (s.durationManual || 0), 0);
-        const remainingSubDays = Math.max(0, stageDuration - manualSubDays);
-        const autoSubSteps = subSteps.filter(s => !s.durationManualEnabled);
-        
-        const subStepDurationWeights = autoSubSteps.map(sub => updatedItems.find(i => i.id === sub.id)?.weight || 1);
-        const totalSubDurationWeight = subStepDurationWeights.reduce((a, b) => a + b, 0);
-        
-        if (totalSubDurationWeight > 0) {
-          let allocatedSubDays = 0;
-          autoSubSteps.forEach((sub, idx) => {
-            const subIndex = updatedItems.findIndex(i => i.id === sub.id);
-            if (subIndex === -1) return;
-            
-            let duration = 0;
-            if (idx === autoSubSteps.length - 1) {
-              duration = Math.max(1, remainingSubDays - allocatedSubDays);
-            } else {
-              duration = Math.max(1, Math.round(remainingSubDays * (subStepDurationWeights[idx] / totalSubDurationWeight)));
-            }
-            allocatedSubDays += duration;
-            updatedItems[subIndex].durationManual = duration;
-          });
-        }
       }
     });
 
@@ -142,6 +57,9 @@ export const recalculateScheduleLogic = (
         const mainIndex = updatedItems.findIndex(i => i.id === mainStep.id);
         if (mainIndex === -1) return;
 
+        const depType = updatedItems[mainIndex].dependencyType || 'bloqueante';
+        const deps = updatedItems[mainIndex].dependsOnIds || (updatedItems[mainIndex].dependsOnId ? [updatedItems[mainIndex].dependsOnId] : []);
+        
         if (updatedItems[mainIndex].dateLockedManual && updatedItems[mainIndex].manualStartDate) {
           updatedItems[mainIndex].startDate = updatedItems[mainIndex].manualStartDate;
           if (updatedItems[mainIndex].manualEndDate) {
@@ -153,13 +71,15 @@ export const recalculateScheduleLogic = (
           return;
         }
 
-        const deps = updatedItems[mainIndex].dependsOnIds || (updatedItems[mainIndex].dependsOnId ? [updatedItems[mainIndex].dependsOnId] : []);
         if (deps.length > 0) {
           let maxRefDate: string | null = null;
           let isFF = false;
           deps.forEach(depId => {
             const dep = updatedItems.find(i => i.id === depId);
             if (dep) {
+              // Blocking dependencies always push. Flexible ones might be more "lax" but in this motor we treat them as pushing too, 
+              // unless we define "Flexible" as "not pushing if it creates a gap". 
+              // For now, let's follow the user's "bloqueante empurra" vs "paralela no mesmo tempo".
               const linkType = updatedItems[mainIndex].linkType || 'FS';
               if (linkType === 'FS' && dep.endDate) {
                 const d = addDays(dep.endDate, 1);
@@ -184,16 +104,21 @@ export const recalculateScheduleLogic = (
               updatedItems[mainIndex].endDate = addDays(maxRefDate, (updatedItems[mainIndex].durationManual || 1) - 1);
             }
           }
-        } else if (updatedItems[mainIndex].canExecuteParallel) {
+        } else if (depType === 'paralela' || updatedItems[mainIndex].canExecuteParallel) {
+          updatedItems[mainIndex].startDate = project.startDate;
+          updatedItems[mainIndex].endDate = addDays(project.startDate!, (updatedItems[mainIndex].durationManual || 1) - 1);
+        } else if (depType === 'flexivel') {
+          // Flexible might start with project but doesn't block the sequential flow
           updatedItems[mainIndex].startDate = project.startDate;
           updatedItems[mainIndex].endDate = addDays(project.startDate!, (updatedItems[mainIndex].durationManual || 1) - 1);
         } else {
-          // Sequencial
+          // Sequencial (Bloqueante por default para o fluxo da lista)
           updatedItems[mainIndex].startDate = currentStageStartDate;
           updatedItems[mainIndex].endDate = addDays(currentStageStartDate!, (updatedItems[mainIndex].durationManual || 1) - 1);
         }
 
-        if (!updatedItems[mainIndex].canExecuteParallel && deps.length === 0) {
+        // Determinar se empurra a próxima etapa no fluxo sequencial
+        if (depType === 'bloqueante' && !updatedItems[mainIndex].canExecuteParallel) {
           currentStageStartDate = addDays(updatedItems[mainIndex].endDate!, 1);
         }
       });
@@ -221,6 +146,7 @@ export const recalculateScheduleLogic = (
           let referenceDate = updatedItems[mainIndex].startDate; // Default to stage start
           let isFF = false;
 
+          const depType = updatedItems[subIndex].dependencyType || 'bloqueante';
           const deps = updatedItems[subIndex].dependsOnIds || (updatedItems[subIndex].dependsOnId ? [updatedItems[subIndex].dependsOnId] : []);
           if (deps.length > 0) {
             let maxRefDate: string | null = null;
@@ -246,7 +172,7 @@ export const recalculateScheduleLogic = (
             }
           } else {
             // Sem dependências
-            if (updatedItems[subIndex].canExecuteParallel) {
+            if (depType === 'paralela' || depType === 'flexivel' || updatedItems[subIndex].canExecuteParallel) {
               referenceDate = updatedItems[mainIndex].startDate;
             } else {
               // Se não pode executar em paralelo e não tem dependência, segue a ordem da lista (sequencial)
@@ -266,7 +192,7 @@ export const recalculateScheduleLogic = (
             updatedItems[subIndex].endDate = addDays(referenceDate, (updatedItems[subIndex].durationManual || 1) - 1);
           }
 
-          if (!updatedItems[subIndex].canExecuteParallel) {
+          if (depType === 'bloqueante' && !updatedItems[subIndex].canExecuteParallel) {
              previousSubEndDate = updatedItems[subIndex].endDate;
           }
         });

@@ -11,12 +11,12 @@ import { InlineDateInput } from '../components/InlineDateInput';
 
 export default function CronogramaPage() {
   const { 
-    scheduleItems,
-    projects, 
-    addScheduleItem,
-    updateScheduleItem,
-    deleteScheduleItem,
-    updateProject,
+    tarefas,
+    obras, 
+    addTarefa,
+    updateTarefa,
+    deleteTarefa,
+    updateObra,
     users,
     recalculateAll
   } = useData();
@@ -37,13 +37,13 @@ export default function CronogramaPage() {
     search: ''
   });
 
-  const project = projects.find(p => p.id === filterProject);
+  const project = obras.find(p => p.id === filterProject);
 
   // Calculate Project Steps with Progress and Dates
   const projectSteps = useMemo(() => {
     if (!filterProject || !project) return [];
     
-    let items = scheduleItems.filter(s => s.projectId === filterProject);
+    let items = tarefas.filter(s => s.obraId === filterProject);
 
     const mainStepsRaw = items
       .filter(s => !s.parentStepId)
@@ -85,14 +85,14 @@ export default function CronogramaPage() {
     }
 
     return filteredSteps;
-  }, [scheduleItems, filterProject, filters]);
+  }, [tarefas, filterProject, filters]);
 
   // Calculate Overall Progress for selected project
   const overallProgress = useMemo(() => {
     if (!filterProject || projectSteps.length === 0) return 0;
     
     // Use all items for real progress, not just filtered ones
-    const allItems = scheduleItems.filter(s => s.projectId === filterProject);
+    const allItems = tarefas.filter(s => s.obraId === filterProject);
     const mainSteps = allItems.filter(s => !s.parentStepId);
     
     const totalWeight = mainSteps.reduce((acc, s) => acc + (Number(s.weight) || 0), 0);
@@ -105,7 +105,7 @@ export default function CronogramaPage() {
     }, 0);
     
     return Math.round(weightedProgress);
-  }, [scheduleItems, filterProject, projectSteps.length]);
+  }, [tarefas, filterProject, projectSteps.length]);
 
   // Helper function to format YYYY-MM-DD to DD/MM/YYYY
   const formatDateToBR = (dateStr: string | null | undefined) => {
@@ -129,7 +129,9 @@ export default function CronogramaPage() {
     linkType: 'FS' as 'FS' | 'SS' | 'FF',
     workFront: '',
     dateLockedManual: false,
-    canExecuteParallel: false
+    canExecuteParallel: false,
+    dependencyType: 'bloqueante' as 'bloqueante' | 'paralela' | 'flexivel',
+    durationManual: 1
   });
 
   const handleOpenModal = (item?: any, parentId?: string) => {
@@ -148,7 +150,9 @@ export default function CronogramaPage() {
         linkType: item.linkType || 'FS',
         workFront: item.workFront || '',
         dateLockedManual: item.dateLockedManual || false,
-        canExecuteParallel: item.canExecuteParallel || false
+        canExecuteParallel: item.canExecuteParallel || false,
+        dependencyType: item.dependencyType || 'bloqueante',
+        durationManual: item.durationManual || 1
       });
     } else {
       setEditingItem(null);
@@ -170,7 +174,9 @@ export default function CronogramaPage() {
         linkType: 'FS',
         workFront: '',
         dateLockedManual: false,
-        canExecuteParallel: false
+        canExecuteParallel: false,
+        dependencyType: 'bloqueante',
+        durationManual: 1
       });
     }
     setIsModalOpen(true);
@@ -180,28 +186,31 @@ export default function CronogramaPage() {
     e.preventDefault();
     if (!filterProject) return;
 
+    const now = new Date().toISOString();
     const data: Omit<ScheduleItem, 'id'> = {
       ...formData,
-      projectId: filterProject,
+      obraId: filterProject,
       parentStepId: (editingItem ? editingItem.parentStepId : parentStepId) || undefined,
-      ordem: editingItem ? editingItem.ordem : (scheduleItems.filter(s => s.projectId === filterProject && s.parentStepId === (parentStepId || undefined)).length),
+      ordem: editingItem ? editingItem.ordem : (tarefas.filter(s => s.obraId === filterProject && s.parentStepId === (parentStepId || undefined)).length),
       startDateManual: formData.dateLockedManual,
       endDateManual: formData.dateLockedManual,
       dateLockedManual: formData.dateLockedManual,
       manualStartDate: formData.dateLockedManual ? formData.startDate : undefined,
-      manualEndDate: formData.dateLockedManual ? formData.endDate : undefined
+      manualEndDate: formData.dateLockedManual ? formData.endDate : undefined,
+      updatedAt: now,
+      ...(editingItem ? {} : { createdAt: now })
     };
 
     if (editingItem) {
-      await updateScheduleItem(editingItem.id, data);
+      await updateTarefa(editingItem.id, data);
     } else {
-      await addScheduleItem(data);
+      await addTarefa(data);
     }
     setIsModalOpen(false);
   };
 
   const handleUpdateSubStageProgress = async (subId: string, val: number) => {
-    const subItem = scheduleItems.find(i => i.id === subId);
+    const subItem = tarefas.find(i => i.id === subId);
     if (!subItem) return;
 
     let newStatus: any = 'pendente';
@@ -211,18 +220,18 @@ export default function CronogramaPage() {
     else if (val >= 25) newStatus = 'em_processo';
     else if (val > 0) newStatus = 'em_processo'; // Default for > 0 but < 25
     
-    await updateScheduleItem(subId, { progress: val, status: newStatus });
+    await updateTarefa(subId, { progress: val, status: newStatus });
   };
 
   const handleUpdateProjectField = async (field: string, value: any) => {
     if (!project) return;
-    await updateProject(project.id, { [field]: value });
+    await updateObra(project.id, { [field]: value });
   };
 
   const totalWeights = useMemo(() => {
-    const mainSteps = scheduleItems.filter(s => s.projectId === filterProject && !s.parentStepId);
+    const mainSteps = tarefas.filter(s => s.obraId === filterProject && !s.parentStepId);
     return mainSteps.reduce((acc, curr) => acc + (Number(curr.weight) || 0), 0);
-  }, [scheduleItems, filterProject]);
+  }, [tarefas, filterProject]);
 
   const projectStatus = useMemo(() => {
     const endDateStr = project?.endDate;
@@ -242,7 +251,7 @@ export default function CronogramaPage() {
   const dependencyOptions = useMemo(() => {
     if (!filterProject) return [];
     
-    const allItems = scheduleItems.filter(s => s.projectId === filterProject);
+    const allItems = tarefas.filter(s => s.obraId === filterProject);
     
     // Filter all items except the current one
     const availableItems = allItems.filter(i => i.id !== editingItem?.id);
@@ -272,7 +281,7 @@ export default function CronogramaPage() {
     });
 
     return grouped;
-  }, [scheduleItems, filterProject, editingItem]);
+  }, [tarefas, filterProject, editingItem]);
 
   const expectedEndDate = useMemo(() => {
     if (project?.endDate) return formatDateToBR(project.endDate);
@@ -342,7 +351,7 @@ export default function CronogramaPage() {
   return (
     <div className="p-4 lg:p-8 bg-[#0B0E14] min-h-screen text-white">
       <CronogramaHeader 
-        projects={projects}
+        obras={obras}
         selectedProjectId={filterProject || ''}
         onSelectProject={setFilterProject}
         onAddEtapa={() => handleOpenModal()}
@@ -374,16 +383,9 @@ export default function CronogramaPage() {
               />
             ),
             expectedDate: (
-              <InlineDateInput 
-                value={project?.endDate || ''}
-                className="text-xl font-black text-white"
-                onUpdate={async (date) => {
-                  if (project?.startDate) {
-                    const newTotalDays = getDaysBetween(project.startDate, date);
-                    await handleUpdateProjectField('totalDays', newTotalDays);
-                  }
-                }}
-              />
+              <div className="text-xl font-black text-white">
+                {project?.endDate ? formatDateToBR(project.endDate) : '-'}
+              </div>
             ),
             status: projectStatus.label,
             progress: overallProgress,
@@ -473,14 +475,14 @@ export default function CronogramaPage() {
                   onEdit={() => handleOpenModal(step)} 
                   onDelete={() => {
                     if (confirm('Deseja realmente excluir esta etapa? Todas as subetapas vinculadas serão removidas permanentemente.')) {
-                      deleteScheduleItem(step.id);
+                      deleteTarefa(step.id);
                     }
                   }} 
                   onAddSubStage={() => handleOpenModal(undefined, step.id)}
                   onEditSubStage={(sub) => handleOpenModal(sub)}
                   onDeleteSubStage={(subId) => {
                     if (confirm('Deseja excluir esta subetapa?')) {
-                      deleteScheduleItem(subId);
+                      deleteTarefa(subId);
                     }
                   }}
                   onUpdateSubStageProgress={handleUpdateSubStageProgress}
@@ -555,7 +557,7 @@ export default function CronogramaPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
             <div className="space-y-2">
               <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Peso (%)</label>
               <input 
@@ -578,18 +580,6 @@ export default function CronogramaPage() {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Complexidade</label>
-              <select 
-                value={formData.complexity}
-                onChange={(e) => setFormData({...formData, complexity: e.target.value as Complexity})}
-                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
-              >
-                <option value="baixa">Baixa</option>
-                <option value="media">Média</option>
-                <option value="alta">Alta</option>
-              </select>
-            </div>
-            <div className="space-y-2">
               <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Status</label>
               <select 
                 value={formData.status}
@@ -601,6 +591,57 @@ export default function CronogramaPage() {
                 <option value="concluido">Concluído</option>
                 <option value="atrasado">Atrasado</option>
               </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest text-[#F97316]">Duração (Dias)</label>
+              <input 
+                type="number"
+                min="1"
+                value={formData.durationManual}
+                onChange={(e) => setFormData({...formData, durationManual: Number(e.target.value)})}
+                placeholder="Ex: 5"
+                className="w-full bg-[#0B0E14] border border-[#F97316]/30 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all font-bold"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Complexidade (Ajusta Duração se Auto)</label>
+              <select 
+                value={formData.complexity}
+                onChange={(e) => setFormData({...formData, complexity: e.target.value as Complexity})}
+                className="w-full bg-[#0B0E14] border border-white/10 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all"
+              >
+                <option value="baixa">Baixa</option>
+                <option value="media">Média</option>
+                <option value="alta">Alta</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest text-[#F97316]">Comportamento / Dependência</label>
+              <select 
+                value={formData.dependencyType}
+                onChange={(e) => setFormData({...formData, dependencyType: e.target.value as any})}
+                className="w-full bg-[#0B0E14] border border-[#F97316]/30 rounded-xl px-5 py-3 text-white focus:outline-none focus:border-[#F97316] transition-all font-bold"
+              >
+                <option value="bloqueante">🧱 Bloqueante (Padronizado)</option>
+                <option value="paralela">🤝 Paralela (Execução em Conjunto)</option>
+                <option value="flexivel">🍃 Flexível (Ajuste Independente)</option>
+              </select>
+            </div>
+            <div className="space-y-2">
+               <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest invisible">Info</label>
+               <div className="bg-[#161B22] p-3 rounded-xl border border-white/5 h-[50px] flex items-center">
+                <p className="text-[9px] text-gray-400 italic">
+                  {formData.dependencyType === 'bloqueante' && "Empurra automaticamente as próximas etapas ao ser alterada."}
+                  {formData.dependencyType === 'paralela' && "Ocorre ao mesmo tempo que a etapa anterior/pai."}
+                  {formData.dependencyType === 'flexivel' && "Pode ser ajustada sem deslocar o fluxo via dependências."}
+                </p>
+               </div>
             </div>
           </div>
 

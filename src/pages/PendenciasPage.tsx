@@ -7,7 +7,7 @@ import ConfirmModal from '../components/ui/ConfirmModal';
 import { exportToPdf } from '../utils/pdfExport';
 
 export default function PendenciasPage() {
-  const { pendencies, addPendency, updatePendency, deletePendency, projects, users, scheduleItems, currentUser } = useData();
+  const { pendencias, addPendencia, updatePendencia, deletePendencia, obras, users, tarefas, currentUser } = useData();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingPendency, setEditingPendency] = useState<Pendency | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -22,7 +22,7 @@ export default function PendenciasPage() {
   const [formData, setFormData] = useState<Omit<Pendency, 'id'>>({
     title: '',
     description: '',
-    projectId: '',
+    obraId: '',
     stage: '',
     scheduleItemId: '',
     origin: 'outro',
@@ -42,7 +42,7 @@ export default function PendenciasPage() {
       setFormData({
         title: '',
         description: '',
-        projectId: '',
+        obraId: '',
         stage: '',
         scheduleItemId: '',
         origin: 'outro',
@@ -58,10 +58,18 @@ export default function PendenciasPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const now = new Date().toISOString();
     if (editingPendency) {
-      updatePendency(editingPendency.id, formData);
+      updatePendencia(editingPendency.id, {
+        ...formData,
+        updatedAt: now
+      });
     } else {
-      addPendency(formData);
+      addPendencia({
+        ...formData,
+        createdAt: now,
+        updatedAt: now
+      });
     }
     setIsModalOpen(false);
   };
@@ -72,15 +80,15 @@ export default function PendenciasPage() {
 
   const confirmDelete = () => {
     if (pendencyToDelete) {
-      deletePendency(pendencyToDelete);
+      deletePendencia(pendencyToDelete);
       setPendencyToDelete(null);
     }
   };
 
-  const filteredPendencies = pendencies.filter(p => {
+  const filteredPendencies = pendencias.filter(p => {
     const matchesSearch = p.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
                          p.description.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesProject = filterProject === '' || p.projectId === filterProject;
+    const matchesProject = filterProject === '' || p.obraId === filterProject;
     const matchesScheduleItem = filterScheduleItem === '' || p.scheduleItemId === filterScheduleItem;
     const matchesPriority = filterPriority === '' || p.priority === filterPriority;
     const matchesStatus = filterStatus === '' || p.status === filterStatus;
@@ -114,15 +122,15 @@ export default function PendenciasPage() {
   };
 
   const handleExportPdf = () => {
-    const project = projects.find(p => p.id === filterProject);
+    const project = obras.find(p => p.id === filterProject);
     const projectName = project ? project.name : 'Todas as Obras';
     
     const head = [['Obra', 'Item Vinculado', 'Título', 'Prioridade', 'Responsável', 'Status', 'Prazo']];
     const body: any[][] = [];
 
     filteredPendencies.forEach(p => {
-      const proj = projects.find(proj => proj.id === p.projectId);
-      const scheduleItem = scheduleItems.find(s => s.id === p.scheduleItemId);
+      const proj = obras.find(proj => proj.id === p.obraId);
+      const scheduleItem = tarefas.find(s => s.id === p.tarefaId || s.id === p.scheduleItemId);
       const responsible = users.find(u => u.id === p.responsibleId);
       
       let statusText = '';
@@ -193,7 +201,7 @@ export default function PendenciasPage() {
             className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2 text-white text-xs lg:text-sm focus:outline-none focus:border-[#F97316]"
           >
             <option value="">Todas as Obras</option>
-            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {obras.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </div>
         <div className="bg-[#161B22] p-3 lg:p-4 rounded-xl border border-white/10">
@@ -233,7 +241,7 @@ export default function PendenciasPage() {
             disabled={!filterProject}
           >
             <option value="">Todos os Itens</option>
-            {scheduleItems.filter(s => s.projectId === filterProject).map(s => (
+            {tarefas.filter(s => s.obraId === filterProject).map(s => (
               <option key={s.id} value={s.id}>{s.title}</option>
             ))}
           </select>
@@ -268,12 +276,12 @@ export default function PendenciasPage() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:flex-wrap gap-x-6 gap-y-2 text-[10px] text-gray-500 uppercase font-bold tracking-wider">
                     <div className="flex items-center gap-2">
                       <span className="text-gray-600">Obra:</span>
-                      <span className="text-gray-300 truncate">{projects.find(p => p.id === pendency.projectId)?.name}</span>
+                      <span className="text-gray-300 truncate">{obras.find(p => p.id === pendency.obraId)?.name}</span>
                     </div>
-                    {pendency.scheduleItemId && (
+                    {pendency.tarefaId && (
                       <div className="flex items-center gap-2">
                         <span className="text-gray-600">Item:</span>
-                        <span className="text-gray-300 truncate">{scheduleItems.find(s => s.id === pendency.scheduleItemId)?.title}</span>
+                        <span className="text-gray-300 truncate">{tarefas.find(s => s.id === pendency.tarefaId || s.id === pendency.scheduleItemId)?.title}</span>
                       </div>
                     )}
                     <div className="flex items-center gap-2">
@@ -345,12 +353,12 @@ export default function PendenciasPage() {
               <label className="text-xs lg:text-sm text-gray-400">Obra *</label>
               <select 
                 required
-                value={formData.projectId || ''}
-                onChange={(e) => setFormData({ ...formData, projectId: e.target.value, scheduleItemId: '' })}
+                value={formData.obraId || ''}
+                onChange={(e) => setFormData({ ...formData, obraId: e.target.value, scheduleItemId: '' })}
                 className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
               >
                 <option value="">Selecione a obra</option>
-                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                {obras.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
             <div className="space-y-1.5">
@@ -359,10 +367,10 @@ export default function PendenciasPage() {
                 value={formData.scheduleItemId || ''}
                 onChange={(e) => setFormData({ ...formData, scheduleItemId: e.target.value })}
                 className="w-full bg-[#0B0E14] border border-white/10 rounded-lg p-2.5 lg:p-3 text-white text-sm lg:text-base focus:outline-none focus:border-[#F97316]"
-                disabled={!formData.projectId}
+                disabled={!formData.obraId}
               >
                 <option value="">Nenhum item vinculado</option>
-                {scheduleItems.filter(s => s.projectId === formData.projectId).map(s => (
+                {tarefas.filter(s => s.obraId === formData.obraId).map(s => (
                   <option key={s.id} value={s.id}>{s.title}</option>
                 ))}
               </select>

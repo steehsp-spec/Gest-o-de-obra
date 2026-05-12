@@ -8,14 +8,14 @@ export const CronogramaHeader = ({
   onAddEtapa, 
   onExportPdf, 
   onRecalculate,
-  projects,
+  obras,
   selectedProjectId,
   onSelectProject
 }: { 
   onAddEtapa: () => void, 
   onExportPdf: () => void, 
   onRecalculate: () => void,
-  projects: any[],
+  obras: any[],
   selectedProjectId: string,
   onSelectProject: (id: string) => void
 }) => (
@@ -28,7 +28,7 @@ export const CronogramaHeader = ({
         className="bg-[#161B22] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-[#F97316]"
       >
         <option value="">Selecionar Obra</option>
-        {projects.map(p => (
+        {obras.map(p => (
           <option key={p.id} value={p.id}>{p.name}</option>
         ))}
       </select>
@@ -174,7 +174,7 @@ export const SubStageRow = ({
   onDelete: () => void,
   onUpdateProgress: (val: number) => void
 }) => {
-  const { scheduleItems, users, updateScheduleItem } = useData();
+  const { tarefas, users, updateTarefa } = useData();
   const responsible = users.find(u => u.id === subStage.responsibleId);
 
   const formatDateToBR = (dateStr: string | null | undefined) => {
@@ -212,6 +212,15 @@ export const SubStageRow = ({
               Paralelo
             </span>
           )}
+          {subStage.dependencyType && subStage.dependencyType !== 'bloqueante' && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium uppercase tracking-wider flex items-center gap-1 ${
+              subStage.dependencyType === 'paralela' 
+                ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' 
+                : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+            }`}>
+              {subStage.dependencyType === 'paralela' ? '🤝 Paralela' : '🍃 Flexível'}
+            </span>
+          )}
           {(subStage.dateLockedManual || subStage.durationManualEnabled) && (
             <span className="text-[10px] bg-[#F97316]/10 text-[#F97316] px-1.5 py-0.5 rounded border border-[#F97316]/20 font-medium uppercase tracking-wider">
               Manual
@@ -226,7 +235,7 @@ export const SubStageRow = ({
           <InlineDateInput 
             value={subStage.startDate || ''} 
             onUpdate={async (date) => {
-              await updateScheduleItem(subStage.id, { 
+              await updateTarefa(subStage.id, { 
                 manualStartDate: date, 
                 startDateManual: true, 
                 dateLockedManual: true 
@@ -239,7 +248,7 @@ export const SubStageRow = ({
           <InlineDateInput 
             value={subStage.endDate || ''} 
             onUpdate={async (date) => {
-              await updateScheduleItem(subStage.id, { 
+              await updateTarefa(subStage.id, { 
                 manualEndDate: date, 
                 endDateManual: true, 
                 dateLockedManual: true 
@@ -251,7 +260,7 @@ export const SubStageRow = ({
           <button
             onClick={(e) => {
               e.stopPropagation();
-              updateScheduleItem(subStage.id, { 
+              updateTarefa(subStage.id, { 
                 dateLockedManual: false,
                 startDateManual: false,
                 endDateManual: false,
@@ -330,7 +339,7 @@ export const StageBlock = ({
   onUpdateSubStageProgress: (subStageId: string, val: number) => void
 }) => {
   const [expanded, setExpanded] = useState(true);
-  const { updateScheduleItem, batchUpdateScheduleItems } = useData();
+  const { updateTarefa, batchUpdateTarefas } = useData();
 
   const duration = stage.startDate && stage.endDate ? getDaysBetween(stage.startDate, stage.endDate) : 0;
   const [localDuration, setLocalDuration] = useState(duration);
@@ -357,7 +366,7 @@ export const StageBlock = ({
       }
     ];
 
-    batchUpdateScheduleItems(updates);
+    batchUpdateTarefas(updates);
   };
 
   const handleDurationBlur = () => {
@@ -404,13 +413,22 @@ export const StageBlock = ({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      updateScheduleItem(stage.id, { durationManualEnabled: false, durationManual: undefined });
+                      updateTarefa(stage.id, { durationManualEnabled: false, durationManual: undefined });
                     }}
                     className="text-[9px] bg-white/10 hover:bg-[#F97316]/20 text-gray-400 hover:text-[#F97316] px-1.5 py-0.5 rounded transition-all ml-1"
                     title="Voltar para cálculo automático"
                   >
                     Auto
                   </button>
+                )}
+                {stage.dependencyType && stage.dependencyType !== 'bloqueante' && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium uppercase tracking-wider ml-2 flex items-center gap-1 ${
+                    stage.dependencyType === 'paralela' 
+                      ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' 
+                      : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                  }`}>
+                    {stage.dependencyType === 'paralela' ? '🤝 Paralela' : '🍃 Flexível'}
+                  </span>
                 )}
                 {(stage.dateLockedManual || stage.durationManualEnabled) && (
                   <span className="text-[10px] bg-[#F97316]/10 text-[#F97316] px-1.5 py-0.5 rounded border border-[#F97316]/20 font-medium uppercase tracking-wider ml-2">

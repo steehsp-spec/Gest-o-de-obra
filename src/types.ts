@@ -1,142 +1,158 @@
+export interface Activity {
+  id: string;
+  obraId: string;
+  userId: string;
+  userName: string;
+  type: 'create' | 'update' | 'delete' | 'comment';
+  entity: 'obra' | 'tarefa' | 'transacao' | 'pendencia';
+  entityId: string;
+  description: string;
+  timestamp: string;
+}
+
+export type TransactionCategory = 'material' | 'mao_de_obra' | 'equipamento' | 'servico' | 'administrativo' | 'outros';
+
 export type UserRole = 'administrador' | 'engenheiro' | 'encarregado' | 'financeiro' | 'cliente';
 
 export interface User {
-  id: string; // This will be the Firebase UID
-  uid?: string; // Redundant but good for clarity as requested
+  id: string; // Auth UID
+  uid: string; // Duplicate for safety, must match id
   name: string;
   email: string;
   phone: string;
   role: UserRole;
   status: 'ativo' | 'inativo';
+  createdAt: string;
+  updatedAt: string;
   password?: string;
-  createdAt?: string;
-  updatedAt?: string;
 }
 
 export type ProjectStatus = 'planejamento' | 'em_execucao' | 'paralizada' | 'concluida' | 'atrasada';
 
-export interface Project {
+export interface Obra {
   id: string;
   name: string;
-  code: string;
+  code?: string;
   client: string;
-  phone: string;
-  address: string;
-  city: string;
+  phone?: string;
+  address?: string;
+  city?: string;
   startDate: string;
   endDate: string;
-  totalDays?: number;
-  managerId: string; // User ID
+  totalDays: number;
+  managerId?: string;
   budget: number;
   status: ProjectStatus;
-  description: string;
-  tipoCronograma?: 'em_branco' | 'obra_completa' | 'obra_parcial' | 'manutencao';
-  estruturaCronograma?: TemplateStep[];
+  description?: string;
   progress: number;
-  location?: string;
-  updatedAt?: string;
-  createdAt?: string;
-  lastManualOverrideAt?: number;
+  createdAt: string;
+  updatedAt: string;
+  tipoCronograma?: 'automatico' | 'duracao' | 'manual' | 'em_branco';
+  estruturaCronograma?: any;
 }
 
-export interface ProjectTemplate {
+export interface Responsavel {
   id: string;
   name: string;
-  type: 'obra_completa' | 'obra_parcial' | 'manutencao' | 'em_branco' | 'personalizado';
-  structure: TemplateStep[];
-  updatedAt?: string;
+  email?: string;
+  phone?: string;
+  specialty?: string;
+  status: 'ativo' | 'inativo';
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type Priority = 'baixa' | 'media' | 'alta' | 'critica';
-export type PendencyStatus = 'aberta' | 'em_andamento' | 'resolvida' | 'cancelada';
+export type PendencyStatus = 'aberta' | 'em_andamento' | 'resolvida' | 'cancelada' | 'em_analise';
 
-export interface Pendency {
+export interface Pendencia {
   id: string;
   title: string;
   description: string;
-  projectId: string;
-  stage: string; // Keep for backward compatibility or general stage
-  scheduleItemId?: string; // Link to specific schedule item
-  origin?: 'cronograma' | 'outro';
+  obraId: string;
+  tarefaId?: string; // New name
+  scheduleItemId?: string; // Legacy alias
+  origin?: string;
   responsibleId: string;
   priority: Priority;
   deadline: string;
   status: PendencyStatus;
+  createdAt: string;
+  updatedAt: string;
+  stage?: string;
   finalObservation?: string;
-}
-
-export type ActivityStatus = 'a_fazer' | 'em_andamento' | 'revisao' | 'finalizando' | 'concluido';
-
-export interface Activity {
-  id: string;
-  name: string;
-  projectId: string;
-  stage: string;
-  responsibleId: string;
-  startDate: string;
-  endDate: string;
-  priority: Priority;
-  progress: number; // 0-100
-  status: ActivityStatus;
-  observation?: string;
 }
 
 export type Complexity = 'baixa' | 'media' | 'alta';
 
-export interface ScheduleItem {
+export interface Tarefa {
   id: string;
-  projectId: string;
-  parentStepId?: string; // If null, it's a main step
-  templateStepId?: string; // Link to TemplateStep.id
-  templateSubStepId?: string; // Link to TemplateSubStep.id
+  obraId: string;
+  parentStepId?: string;
   title: string;
   ordem: number;
   ordem_etapa?: number;
   ordem_subitem?: number;
-  responsibleId?: string; // Mantido para compatibilidade
-  responsavelTipo?: 'usuario' | 'manual';
   responsavelUserId?: string;
+  responsibleId?: string; // Legacy/UI alias
   responsavelNome?: string;
-  startDate?: string;
-  endDate?: string;
+  startDate: string;
+  endDate: string;
   progress: number;
-  weight: number; // For main steps: % of project (0-100). For sub-steps: complexity weight (1, 2, 3)
-  complexity?: Complexity; // Only for sub-steps
-  realWeight?: number; // Calculated: weight in the total project (0-100)
-  status: 'pendente' | 'em_andamento' | 'em_processo' | 'revisao' | 'finalizando' | 'concluido' | 'atrasado';
-  dependsOnId?: string; // ID of another ScheduleItem in the same project (deprecated, use dependsOnIds)
-  dependsOnIds?: string[]; // Multiple dependencies
-  followScheduleOrder?: boolean; // If true, depends on the previous item in the list
+  weight: number;
+  complexity?: Complexity;
+  realWeight?: number;
+  responsavelTipo?: 'usuario' | 'manual';
+  status: 'pendente' | 'em_processo' | 'revisao' | 'finalizando' | 'concluido' | 'atrasado' | 'em_andamento';
+  createdAt: string;
+  updatedAt: string;
+  duration?: number;
+  description?: string;
+  notes?: string;
   workFront?: string;
+  // Field for automatic calculation
+  dependsOnId?: string;
+  dependsOnIds?: string[];
+  dependencyType?: 'bloqueante' | 'paralela' | 'flexivel';
+  linkType?: string; 
+  canExecuteParallel?: boolean;
+  // Manual overrides
+  dateLockedManual?: boolean;
   startDateManual?: boolean;
   endDateManual?: boolean;
-  baseDurationDays?: number;
-  liberatingActivityId?: string;
-  linkType?: 'FS' | 'SS' | 'FF'; // FS: Finish-to-Start, SS: Start-to-Start, FF: Finish-to-Finish
-  dateLockedManual?: boolean;
-  canExecuteParallel?: boolean;
-  activityType?: string;
-  durationManual?: number;
-  durationManualEnabled?: boolean;
   manualStartDate?: string;
   manualEndDate?: string;
+  durationManual?: number;
+  durationManualEnabled?: boolean;
   manualDays?: number;
-  manualProgress?: number;
-  lastManualOverrideAt?: number;
+  // Template metadata
+  templateStepId?: string;
+  templateSubStepId?: string;
+  activityType?: string;
+  baseDurationDays?: number;
 }
 
 export type TransactionType = 'entrada' | 'saida';
-export type TransactionCategory = 'materiais' | 'mao_de_obra' | 'equipamentos' | 'administrativo' | 'impostos' | 'recebimento' | 'outros';
 
-export interface Transaction {
+export interface Transacao {
   id: string;
-  projectId: string;
+  obraId: string;
   description: string;
   amount: number;
   type: TransactionType;
-  category: TransactionCategory;
+  category: string;
   date: string;
-  status: 'pendente' | 'pago' | 'atrasado';
+  status: 'pendente' | 'pago' | 'atrasado' | 'confirmado';
+  createdAt: string;
+  updatedAt: string;
+  // Professional/Labor fields
+  workedHours?: number;
+  workedDays?: number;
+  dailyRateValue?: number;
+  payableHours?: number;
+  fullDailyRates?: number;
+  adjustedDailyRates?: number;
+  totalDailyRates?: number;
 }
 
 export interface TemplateSubStep {
@@ -149,11 +165,19 @@ export interface TemplateStep {
   id: string;
   title: string;
   ordem: number;
-  weight: number; // % of project
+  weight: number; 
   subSteps: TemplateSubStep[];
   selected: boolean;
-  selectedSubSteps: Record<string, boolean>; // Key is subStep.id
-  subStepComplexities?: Record<string, Complexity>; // Key is subStep.id
+  selectedSubSteps: Record<string, boolean>; 
+  subStepComplexities?: Record<string, Complexity>;
+}
+
+export interface ProjectTemplate {
+  id: string;
+  name: string;
+  type: 'obra_completa' | 'obra_parcial' | 'manutencao' | 'em_branco' | 'personalizado';
+  structure: TemplateStep[];
+  updatedAt: string;
 }
 
 export interface Settings {
@@ -173,3 +197,9 @@ export interface Settings {
     parcial: TemplateStep[];
   };
 }
+
+// Aliases for transition
+export type Project = Obra;
+export type Transaction = Transacao;
+export type ScheduleItem = Tarefa;
+export type Pendency = Pendencia;

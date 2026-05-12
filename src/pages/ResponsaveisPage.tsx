@@ -5,7 +5,7 @@ import { ScheduleItem, Pendency } from '../types';
 import { exportToPdf } from '../utils/pdfExport';
 
 export default function ResponsaveisPage() {
-  const { scheduleItems, projects, users, pendencies, currentUser } = useData();
+  const { tarefas, obras, users, pendencias, currentUser } = useData();
   
   const [filterProject, setFilterProject] = useState('');
   const [filterResponsible, setFilterResponsible] = useState('');
@@ -46,7 +46,7 @@ export default function ResponsaveisPage() {
       };
     }>();
 
-    scheduleItems.forEach(item => {
+    tarefas.forEach(item => {
       // Determine responsible name
       let respName = item.responsavelNome;
       
@@ -56,15 +56,15 @@ export default function ResponsaveisPage() {
       if (!respName) return; // Skip items without responsible
 
       // --- FILTRO DE INTEGRIDADE ---
-      const project = projects.find(p => p.id === item.projectId);
+      const project = obras.find(p => p.id === item.obraId);
       if (!project) {
-        console.warn(`[LOG TEMPORÁRIO] Item órfão encontrado (sem obra) - Projetos carregados: ${projects.length}:`, item);
+        console.warn(`[LOG TEMPORÁRIO] Item órfão encontrado (sem obra) - Projetos carregados: ${obras.length}:`, item);
         return; // Exclui item sem obra válida
       }
 
       // Verifica se a etapa pai existe, caso o item tenha uma
       if (item.parentStepId) {
-        const parentStep = scheduleItems.find(s => s.id === item.parentStepId);
+        const parentStep = tarefas.find(s => s.id === item.parentStepId);
         if (!parentStep) {
           console.warn(`[LOG TEMPORÁRIO] Item órfão encontrado (etapa pai inexistente):`, item);
           return; // Exclui item com etapa pai inexistente
@@ -72,15 +72,15 @@ export default function ResponsaveisPage() {
       }
 
       // Apply project filter
-      if (filterProject && item.projectId !== filterProject) return;
+      if (filterProject && item.obraId !== filterProject) return;
 
-      const itemPendencies = pendencies.filter(p => p.scheduleItemId === item.id);
+      const itemPendencies = pendencias.filter(p => p.scheduleItemId === item.id);
       const status = getItemStatus(item, itemPendencies);
 
       // Apply status filter
       if (filterStatus && status !== filterStatus) return;
 
-      const parentStep = item.parentStepId ? scheduleItems.find(s => s.id === item.parentStepId) : undefined;
+      const parentStep = item.parentStepId ? tarefas.find(s => s.id === item.parentStepId) : undefined;
 
       if (!map.has(respName)) {
         map.set(respName, {
@@ -107,7 +107,7 @@ export default function ResponsaveisPage() {
     });
 
     return Array.from(map.values()).sort((a, b) => b.stats.total - a.stats.total);
-  }, [scheduleItems, projects, users, pendencies, filterProject, filterStatus]);
+  }, [tarefas, obras, users, pendencias, filterProject, filterStatus]);
 
   // Filter by responsible name
   const filteredResponsaveis = useMemo(() => {
@@ -117,13 +117,13 @@ export default function ResponsaveisPage() {
 
   const uniqueResponsibleNames = useMemo(() => {
     const names = new Set<string>();
-    scheduleItems.forEach(item => {
+    tarefas.forEach(item => {
       let respName = item.responsavelNome;
       // Removemos a busca na lista de usuários.
       if (respName) names.add(respName);
     });
     return Array.from(names).sort();
-  }, [scheduleItems]);
+  }, [tarefas]);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -154,7 +154,7 @@ export default function ResponsaveisPage() {
   };
 
   const handleExportPdf = () => {
-    const project = projects.find(p => p.id === filterProject);
+    const project = obras.find(p => p.id === filterProject);
     const projectName = project ? project.name : 'Todas as Obras';
     
     const head = [['Responsável', 'Total', 'A Fazer', 'Pendente', 'Em andamento', 'Finalizada', '% Concluída']];
@@ -216,7 +216,7 @@ export default function ResponsaveisPage() {
               className="w-full bg-[#161B22] border border-white/10 rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-[#F97316]"
             >
               <option value="">Todas as Obras</option>
-              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {obras.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </div>
           

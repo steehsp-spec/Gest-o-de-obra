@@ -86,7 +86,13 @@ export default function ModelosPage() {
       }))
     }));
     
-    const dataToSave = { ...formData, structure: structureWithOrder };
+    const now = new Date().toISOString();
+    const dataToSave = { 
+      ...formData, 
+      structure: structureWithOrder,
+      updatedAt: now,
+      ...(editingTemplate ? {} : { createdAt: now })
+    };
 
     setIsSaving(true);
     try {

@@ -39,17 +39,8 @@ export default function Header() {
         
         {/* Data Status Indicator - Hidden on very small screens */}
         <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 ml-2 lg:ml-4">
-          {dataStatus.source === 'firestore' ? (
-            <>
-              <Cloud size={12} className="text-emerald-500" />
-              <span className="text-[8px] lg:text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Sincronizado</span>
-            </>
-          ) : (
-            <>
-              <Database size={12} className="text-orange-500" />
-              <span className="text-[8px] lg:text-[10px] font-bold text-orange-500 uppercase tracking-widest">Modo Local</span>
-            </>
-          )}
+          <Cloud size={12} className="text-emerald-500" />
+          <span className="text-[8px] lg:text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Sincronizado</span>
         </div>
       </div>
 

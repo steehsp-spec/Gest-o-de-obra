@@ -10,10 +10,10 @@ import UpdateTemplateModal from '../components/UpdateTemplateModal';
 
 export default function CadastroObrasPage() {
   const { 
-    projects, addProject, updateProject, deleteProject, 
-    users, addScheduleItem, updateScheduleItem, deleteScheduleItem, 
-    scheduleItems, settings, updateSettings, currentUser, recalculateAll,
-    projectTemplates, updateProjectTemplate, addProjectTemplate
+    obras, addObra, updateObra, deleteObra, 
+    users, addTarefa, updateTarefa, deleteTarefa, 
+    tarefas, settings, currentUser, recalculateAll,
+    projectTemplates, addProjectTemplate
   } = useData();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isUpdateTemplateModalOpen, setIsUpdateTemplateModalOpen] = useState(false);
@@ -44,14 +44,16 @@ export default function CadastroObrasPage() {
     city: '',
     startDate: '',
     endDate: '',
-    totalDays: undefined,
+    totalDays: 0,
     managerId: '',
     budget: 0,
     status: 'planejamento',
     progress: 0,
     description: '',
-    tipoCronograma: 'em_branco',
-    estruturaCronograma: []
+    tipoCronograma: 'manual',
+    estruturaCronograma: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   });
 
   const handleOpenModal = (project?: Project) => {
@@ -64,7 +66,8 @@ export default function CadastroObrasPage() {
       if (savedTemplate) {
         setTemplateName(savedTemplate.name);
       } else {
-        setTemplateName(project.tipoCronograma === 'obra_completa' ? 'Obra Completa' : project.tipoCronograma === 'obra_parcial' ? 'Obra Parcial' : project.tipoCronograma === 'manutencao' ? 'Manutenção' : 'Em branco');
+        const type = project.tipoCronograma as string;
+        setTemplateName(type === 'obra_completa' ? 'Obra Completa' : type === 'obra_parcial' ? 'Obra Parcial' : type === 'manutencao' ? 'Manutenção' : 'Em branco');
       }
       
       // Normalizar estrutura para garantir que todos os subitens sejam objetos com IDs
@@ -122,12 +125,12 @@ export default function CadastroObrasPage() {
         updatedAt: new Date().toISOString()
       };
 
-      let projectId = '';
+      let obraId = '';
       if (editingProject) {
-        await updateProject(editingProject.id, dataToSave);
-        projectId = editingProject.id;
+        await updateObra(editingProject.id, dataToSave);
+        obraId = editingProject.id;
       } else {
-        projectId = await addProject({
+        obraId = await addObra({
           ...dataToSave,
           progress: 0,
           status: 'planejamento',
@@ -136,16 +139,15 @@ export default function CadastroObrasPage() {
       }
 
       // Sincronização com o Cronograma
-      if (projectId) {
+      if (obraId) {
         setSyncStatus('Sincronizando cronograma...');
-        const existingItems = scheduleItems.filter(item => item.projectId === projectId);
+        const existingItems = tarefas.filter(item => item.obraId === obraId);
         
         // Identificar se houve mudanças globais na obra que devem ser propagadas
         const managerChanged = editingProject?.managerId !== formData.managerId;
         
         const managerInfo = {
           responsibleId: formData.managerId || '',
-          responsavelTipo: (formData.managerId ? 'usuario' : 'manual') as 'usuario' | 'manual',
           responsavelUserId: formData.managerId || '',
           responsavelNome: formData.managerId ? (users.find(u => u.id === formData.managerId)?.name || '') : '',
         };
@@ -168,7 +170,7 @@ export default function CadastroObrasPage() {
             }
             return false;
           })
-          .map(item => deleteScheduleItem(item.id));
+          .map(item => deleteTarefa(item.id));
         
         await Promise.all(deletePromises);
 
@@ -184,8 +186,8 @@ export default function CadastroObrasPage() {
 
             if (!mainStepId) {
               // Criar etapa principal se não existir (precisamos do ID para os subitens, então aguardamos)
-              mainStepId = await addScheduleItem({
-                projectId,
+              mainStepId = await addTarefa({
+                obraId,
                 title: step.title,
                 progress: 0,
                 weight: step.weight || 10,
@@ -193,7 +195,11 @@ export default function CadastroObrasPage() {
                 status: 'pendente',
                 ...managerInfo,
                 templateStepId: step.id,
-                ordem: step.ordem
+                ordem: step.ordem,
+                startDate: formData.startDate || new Date().toISOString(),
+                endDate: formData.startDate || new Date().toISOString(),
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
               });
             } else if (mainStepItem) {
               // Atualizar se mudou algo (título, peso ou campos globais)
@@ -205,7 +211,7 @@ export default function CadastroObrasPage() {
 
               if (needsUpdate) {
                 // Podemos atualizar em paralelo
-                subStepPromises.push(updateScheduleItem(mainStepId, {
+                subStepPromises.push(updateTarefa(mainStepId, {
                   title: step.title,
                   weight: step.weight,
                   ordem: step.ordem,
@@ -219,7 +225,7 @@ export default function CadastroObrasPage() {
               for (const sub of step.subSteps) {
                 if (step.selectedSubSteps[sub.id]) {
                   const existingSubItem = existingItems.find(item => 
-                    item.projectId === projectId && 
+                    item.obraId === obraId && 
                     item.parentStepId === mainStepId && 
                     item.templateSubStepId === sub.id
                   );
@@ -229,8 +235,8 @@ export default function CadastroObrasPage() {
 
                   if (!existingSubItem) {
                     // Criar subitem se não existir (pode ser paralelo)
-                    subStepPromises.push(addScheduleItem({
-                      projectId,
+                    subStepPromises.push(addTarefa({
+                      obraId,
                       parentStepId: mainStepId,
                       title: sub.title,
                       progress: 0,
@@ -240,7 +246,11 @@ export default function CadastroObrasPage() {
                       ...managerInfo,
                       templateStepId: step.id,
                       templateSubStepId: sub.id,
-                      ordem: sub.ordem || 0
+                      ordem: sub.ordem || 0,
+                      startDate: formData.startDate || new Date().toISOString(),
+                      endDate: formData.startDate || new Date().toISOString(),
+                      createdAt: new Date().toISOString(),
+                      updatedAt: new Date().toISOString()
                     }));
                   } else {
                     // Atualizar se mudou algo (título, complexidade ou campos globais)
@@ -251,7 +261,7 @@ export default function CadastroObrasPage() {
                       managerChanged;
 
                     if (needsUpdate) {
-                      subStepPromises.push(updateScheduleItem(existingSubItem.id, {
+                      subStepPromises.push(updateTarefa(existingSubItem.id, {
                         title: sub.title,
                         complexity: complexity,
                         weight: weight,
@@ -288,7 +298,7 @@ export default function CadastroObrasPage() {
         // Recalcular tudo após as mudanças estruturais
         setSyncStatus('Recalculando progresso...');
         setTimeout(() => {
-          recalculateAll(projectId);
+          recalculateAll(obraId);
           setSyncStatus('');
         }, 1000);
         alert('Obra salva e estrutura sincronizada com o cronograma com sucesso!');
@@ -530,12 +540,12 @@ export default function CadastroObrasPage() {
 
   const confirmDelete = () => {
     if (projectToDelete) {
-      deleteProject(projectToDelete);
+      deleteObra(projectToDelete);
       setProjectToDelete(null);
     }
   };
 
-  const filteredProjects = projects.filter(p => 
+  const filteredProjects = obras.filter(p => 
     p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     p.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
     p.client.toLowerCase().includes(searchTerm.toLowerCase())
@@ -1225,14 +1235,14 @@ export default function CadastroObrasPage() {
         onConfirm={async () => {
           if (pendingProjectType && editingProject) {
             setIsSaving(true);
-            setSyncStatus('Recriando cronograma...');
+            setSyncStatus('Recreando cronograma...');
             
             applyProjectTypeChange(pendingProjectType);
             
             // Recreate schedule
-            const itemsToDelete = scheduleItems.filter(item => item.projectId === editingProject.id);
+            const itemsToDelete = tarefas.filter(item => item.obraId === editingProject.id);
             for (const item of itemsToDelete) {
-              await deleteScheduleItem(item.id);
+              await deleteTarefa(item.id);
             }
 
             // Get the template data based on pendingProjectType.
@@ -1253,8 +1263,8 @@ export default function CadastroObrasPage() {
 
             for (const step of newTemplate) {
               if (step.selected) {
-                const mainStepId = await addScheduleItem({
-                  projectId: editingProject.id,
+                const mainStepId = await addTarefa({
+                  obraId: editingProject.id,
                   title: step.title,
                   progress: 0,
                   weight: step.weight || 10,
@@ -1280,8 +1290,8 @@ export default function CadastroObrasPage() {
                       const complexity = step.subStepComplexities?.[sub.id] || 'media';
                       const weight = complexity === 'alta' ? 3 : (complexity === 'media' ? 2 : 1);
 
-                      await addScheduleItem({
-                        projectId: editingProject.id,
+                      await addTarefa({
+                        obraId: editingProject.id,
                         parentStepId: mainStepId,
                         title: sub.title,
                         progress: 0,

@@ -4,25 +4,25 @@ import { useData } from '../contexts/DataContext';
 import { exportToPdf } from '../utils/pdfExport';
 
 export default function RelatoriosPage() {
-  const { projects, activities, pendencies, transactions, scheduleItems, currentUser } = useData();
+  const { obras, pendencias, transacoes, tarefas, currentUser } = useData();
   const [selectedProject, setSelectedProject] = useState('');
 
   const reportData = useMemo(() => {
     const filteredProjects = selectedProject 
-      ? projects.filter(p => p.id === selectedProject)
-      : projects;
+      ? obras.filter(p => p.id === selectedProject)
+      : obras;
 
     return filteredProjects.map(project => {
-      const projectPendencies = pendencies.filter(p => p.projectId === project.id);
-      const projectTransactions = transactions.filter(t => t.projectId === project.id);
+      const projectPendencies = pendencias.filter(p => p.obraId === project.id);
+      const projectTransactions = transacoes.filter(t => t.obraId === project.id);
       const totalIncome = projectTransactions.filter(t => t.type === 'entrada').reduce((acc, t) => acc + t.amount, 0);
       const totalExpense = projectTransactions.filter(t => t.type === 'saida').reduce((acc, t) => acc + t.amount, 0);
       
       return {
         ...project,
         stats: {
-          activitiesCount: scheduleItems.filter(s => s.projectId === project.id && s.parentStepId).length,
-          completedActivities: scheduleItems.filter(s => s.projectId === project.id && s.parentStepId && s.progress === 100).length,
+          activitiesCount: tarefas.filter(s => s.obraId === project.id && s.parentStepId).length,
+          completedActivities: tarefas.filter(s => s.obraId === project.id && s.parentStepId && s.progress === 100).length,
           pendenciesCount: projectPendencies.length,
           openPendencies: projectPendencies.filter(p => p.status === 'aberta' || (p.status as string) === 'em_analise').length,
           income: totalIncome,
@@ -32,10 +32,10 @@ export default function RelatoriosPage() {
         }
       };
     });
-  }, [selectedProject, projects, pendencies, transactions, scheduleItems]);
+  }, [selectedProject, obras, pendencias, transacoes, tarefas]);
 
   const handleExportPdf = () => {
-    const project = projects.find(p => p.id === selectedProject);
+    const project = obras.find(p => p.id === selectedProject);
     const projectName = project ? project.name : 'Todas as Obras';
     
     const head = [['Obra', 'Status', 'Progresso Físico', 'Atividades', 'Pendências', 'Saldo Financeiro']];
@@ -82,7 +82,7 @@ export default function RelatoriosPage() {
               className="bg-transparent text-white text-xs lg:text-sm focus:outline-none w-full sm:w-auto"
             >
               <option value="">Todas as Obras</option>
-              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {obras.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </div>
           <button 

@@ -40,7 +40,7 @@
         "updatedAt": { "type": "string", "format": "date-time" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "name", "code", "client", "address", "startDate", "endDate", "managerId", "budget", "status", "progress"]
+      "required": ["id", "name", "client", "startDate", "endDate", "status", "progress"]
     },
     "ProjectTemplate": {
       "title": "ProjectTemplate",
@@ -63,15 +63,16 @@
         "id": { "type": "string" },
         "title": { "type": "string" },
         "description": { "type": "string" },
-        "projectId": { "type": "string" },
-        "stage": { "type": "string" },
-        "scheduleItemId": { "type": "string" },
+        "obraId": { "type": "string" },
+        "tarefaId": { "type": "string" },
         "responsibleId": { "type": "string" },
         "priority": { "type": "string", "enum": ["baixa", "media", "alta", "critica"] },
         "deadline": { "type": "string", "format": "date" },
-        "status": { "type": "string", "enum": ["aberta", "em_andamento", "resolvida", "cancelada"] }
+        "status": { "type": "string", "enum": ["aberta", "em_andamento", "resolvida", "cancelada", "em_analise"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "title", "projectId", "responsibleId", "priority", "deadline", "status"]
+      "required": ["id", "title", "obraId", "responsibleId", "priority", "deadline", "status"]
     },
     "ScheduleItem": {
       "title": "ScheduleItem",
@@ -79,7 +80,7 @@
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "projectId": { "type": "string" },
+        "obraId": { "type": "string" },
         "parentStepId": { "type": "string" },
         "title": { "type": "string" },
         "ordem": { "type": "number" },
@@ -88,27 +89,11 @@
         "weight": { "type": "number" },
         "complexity": { "type": "string", "enum": ["baixa", "media", "alta"] },
         "startDate": { "type": "string", "format": "date" },
-        "endDate": { "type": "string", "format": "date" }
-      },
-      "required": ["id", "projectId", "title", "ordem", "status", "progress", "weight"]
-    },
-    "Activity": {
-      "title": "Activity",
-      "description": "Daily activity in a project",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string" },
-        "name": { "type": "string" },
-        "projectId": { "type": "string" },
-        "stage": { "type": "string" },
-        "responsibleId": { "type": "string" },
-        "startDate": { "type": "string", "format": "date" },
         "endDate": { "type": "string", "format": "date" },
-        "priority": { "type": "string", "enum": ["baixa", "media", "alta", "critica"] },
-        "progress": { "type": "number" },
-        "status": { "type": "string", "enum": ["a_fazer", "em_andamento", "revisao", "finalizando", "concluido"] }
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "name", "projectId", "stage", "responsibleId", "startDate", "endDate", "priority", "progress", "status"]
+      "required": ["id", "obraId", "title", "ordem", "status", "progress", "weight", "startDate", "endDate"]
     },
     "Transaction": {
       "title": "Transaction",
@@ -116,15 +101,17 @@
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "projectId": { "type": "string" },
+        "obraId": { "type": "string" },
         "description": { "type": "string" },
         "amount": { "type": "number" },
         "type": { "type": "string", "enum": ["entrada", "saida"] },
-        "category": { "type": "string", "enum": ["materiais", "mao_de_obra", "equipamentos", "administrativo", "impostos", "recebimento", "outros"] },
+        "category": { "type": "string" },
         "date": { "type": "string", "format": "date" },
-        "status": { "type": "string", "enum": ["pendente", "pago", "atrasado"] }
+        "status": { "type": "string", "enum": ["pendente", "pago", "atrasado", "confirmado"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "projectId", "description", "amount", "type", "category", "date", "status"]
+      "required": ["id", "obraId", "description", "amount", "type", "category", "date", "status"]
     },
     "Settings": {
       "title": "Settings",
@@ -148,27 +135,23 @@
       "schema": { "$ref": "User" },
       "description": "User profiles"
     },
-    "/projects/{projectId}": {
+    "/obras/{obraId}": {
       "schema": { "$ref": "Project" },
       "description": "Construction projects"
     },
-    "/projectTemplates/{templateId}": {
+    "/templates/{templateId}": {
       "schema": { "$ref": "ProjectTemplate" },
       "description": "Customizable project templates"
     },
-    "/pendencies/{pendencyId}": {
+    "/pendencias/{pendenciaId}": {
       "schema": { "$ref": "Pendency" },
       "description": "Project pendencies"
     },
-    "/scheduleItems/{scheduleItemId}": {
+    "/tarefas/{tarefaId}": {
       "schema": { "$ref": "ScheduleItem" },
       "description": "Project schedule items"
     },
-    "/activities/{activityId}": {
-      "schema": { "$ref": "Activity" },
-      "description": "Daily activities"
-    },
-    "/transactions/{transactionId}": {
+    "/transacoes/{transacaoId}": {
       "schema": { "$ref": "Transaction" },
       "description": "Financial transactions"
     },
