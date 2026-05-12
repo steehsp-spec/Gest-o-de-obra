@@ -241,9 +241,6 @@ export const recalculateScheduleLogic = (
         
         const allCompleted = subSteps.every(sub => (updatedItems.find(i => i.id === sub.id)?.progress || 0) === 100);
         let finalProgress = Math.round(weightedProgress);
-        if (finalProgress === 100 && !allCompleted) {
-          finalProgress = 99;
-        }
         
         if (mainIndex !== -1) {
           updatedItems[mainIndex].progress = finalProgress;

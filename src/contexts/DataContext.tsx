@@ -313,8 +313,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       // Filter out invalid items
       const validTarefas = projectTarefas.filter(t => t.title && t.id);
       
+      // Use updatedItem if provided to ensure calculation is based on most recent manual change
+      const tarefasToRecalculate = validTarefas.map(t => 
+        (updatedItem && t.id === updatedItem.id) ? { ...t, ...updatedItem } : t
+      );
+      
       const recalculated = recalculateScheduleLogic(
-        validTarefas,
+        tarefasToRecalculate,
         obra.id,
         stageId,
         updatedProject?.id === pId ? updatedProject : undefined,

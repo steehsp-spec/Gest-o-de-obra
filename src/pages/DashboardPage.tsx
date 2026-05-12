@@ -2,9 +2,10 @@ import React, { useMemo } from 'react';
 import { HardHat, AlertCircle, TrendingUp, Clock, Download, Briefcase, FileText, DollarSign, CheckCircle2, PieChart } from 'lucide-react';
 import { useData } from '../contexts/DataContext';
 import { exportToPdf } from '../utils/pdfExport';
+import { ProgressBar } from '../components/ui/ProgressBar';
 
 const CircularProgress = ({ percentage = 0 }: { percentage: number }) => {
-  const safePercentage = isNaN(percentage) ? 0 : percentage;
+  const safePercentage = isNaN(percentage) ? 0 : Math.min(100, Math.max(0, Math.round(percentage)));
   const radius = 36;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (safePercentage / 100) * circumference;
@@ -80,14 +81,16 @@ export default function DashboardPage() {
       };
     });
 
-    const totalProgressSum = projectSummaries.reduce((acc, p) => acc + (p.progress || 0), 0);
-    const overallProgress = projectSummaries.length > 0 ? Math.round(totalProgressSum / projectSummaries.length) : 0;
+    const overallProgress = projectSummaries.length > 0 
+      ? Math.round(projectSummaries.reduce((acc, p) => acc + (p.progress || 0), 0) / projectSummaries.length) 
+      : 0;
     
     const totalFinancialProgress = totalBudget > 0 ? Math.round((totalExpense / totalBudget) * 100) : 0;
 
-    // Alertas de atraso
+    // Alertas de atraso: dataAtual > dataFim e progresso < 100%
     const delayedItems = tarefas.filter(item => {
-      if (item.status === 'concluido' || !item.endDate) return false;
+      // Somente tarefas "folha" (com peso ou título real) e que não são etapas pai vazias
+      if (item.status === 'concluido' || item.progress === 100 || !item.endDate) return false;
       return item.endDate < todayStr;
     }).map(item => {
       const project = obras.find(p => p.id === item.obraId);
@@ -125,14 +128,21 @@ export default function DashboardPage() {
 
   const handleExportPdf = () => {
     const head = [['Obra', 'Status', 'Prog. Físico', 'Prog. Financeiro', 'Prazo', 'Saldo']];
-    const body = stats.projectSummaries.map(p => [
-      p.name,
-      p.calculatedStatus.replace('_', ' ').toUpperCase(),
-      `${p.progress}%`,
-      `${p.financialProgress.toFixed(1)}%`,
-      formatDate(p.endDate),
-      formatCurrency(p.remainingBalance)
-    ]);
+    const body = stats.projectSummaries.map(p => {
+      let statusLabel = p.calculatedStatus.replace('_', ' ').toUpperCase();
+      if (p.calculatedStatus === 'em_execucao') statusLabel = 'EM EXECUÇÃO';
+      if (p.calculatedStatus === 'concluida') statusLabel = 'CONCLUÍDA';
+      if (p.calculatedStatus === 'atrasada') statusLabel = 'ATRASADA';
+
+      return [
+        p.name,
+        statusLabel,
+        `${p.progress}%`,
+        `${p.financialProgress.toFixed(1)}%`,
+        formatDate(p.endDate),
+        formatCurrency(p.remainingBalance)
+      ];
+    });
 
     exportToPdf({
       title: 'Dashboard Executivo de Obras',
@@ -237,7 +247,10 @@ export default function DashboardPage() {
                           project.calculatedStatus === 'atrasada' ? 'bg-red-500/10 text-red-500 border-red-500/20' :
                           'bg-gray-500/10 text-gray-400 border-gray-500/20'
                         }`}>
-                          {project.calculatedStatus.replace('_', ' ')}
+                          {project.calculatedStatus === 'em_execucao' ? 'EM EXECUÇÃO' : 
+                           project.calculatedStatus === 'concluida' ? 'CONCLUÍDA' :
+                           project.calculatedStatus === 'atrasada' ? 'ATRASADA' :
+                           project.calculatedStatus.replace('_', ' ')}
                         </span>
                         <span className="text-[10px] text-gray-500 font-bold uppercase">Fim: {formatDate(project.endDate)}</span>
                       </div>
@@ -255,14 +268,9 @@ export default function DashboardPage() {
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest">
                         <span className="text-gray-500">Progresso Físico</span>
-                        <span className="text-white">{project.progress}%</span>
+                        <span className="text-white">{Math.round(project.progress)}%</span>
                       </div>
-                      <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-blue-500 rounded-full transition-all duration-1000"
-                          style={{ width: `${project.progress}%` }}
-                        />
-                      </div>
+                      <ProgressBar progress={project.progress} mode="simple" />
                     </div>
                     {/* Progresso Financeiro */}
                     <div className="space-y-2">
@@ -308,7 +316,7 @@ export default function DashboardPage() {
                     <p className="text-[11px] lg:text-xs font-bold text-white line-clamp-2">{item.title}</p>
                     <div className="flex items-center justify-between pt-1">
                         <span className="text-[9px] text-gray-500 font-bold uppercase">Vencido em {formatDate(item.endDate!)}</span>
-                        <span className="text-[9px] bg-red-500 text-white px-1.5 py-0.5 rounded font-black uppercase tracking-widest">Delayed</span>
+                        <span className="text-[9px] bg-red-500 text-white px-1.5 py-0.5 rounded font-black uppercase tracking-widest">ATRASADO</span>
                     </div>
                   </div>
                 ))

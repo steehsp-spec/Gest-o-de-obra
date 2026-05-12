@@ -216,7 +216,7 @@ export const exportToPdf = (options: ExportPdfOptions) => {
       doc.setPage(i);
       doc.setFontSize(8);
       doc.setTextColor(COLORS.slate500[0], COLORS.slate500[1], COLORS.slate500[2]);
-      const footerText = `ConstrutoraPro Gestão de Obras - Relatório Gerado em ${format(now, "dd/MM/yyyy HH:mm")}`;
+      const footerText = `A&R Engenharia Gestão de Obras - Relatório Gerado em ${format(now, "dd/MM/yyyy HH:mm")}`;
       doc.text(footerText, margin, pageHeight - 10);
       doc.text(`Página ${i} de ${totalPages}`, pageWidth - margin, pageHeight - 10, { align: 'right' });
     }

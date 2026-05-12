@@ -3,6 +3,7 @@ import { Plus, Download, Layout, Calendar, ChevronRight, ChevronDown, Edit2, Tra
 import { useData } from '../../contexts/DataContext';
 import { getDaysBetween, addDays } from '../../utils/dateUtils';
 import { InlineDateInput } from '../InlineDateInput';
+import { ProgressBar } from '../ui/ProgressBar';
 
 export const CronogramaHeader = ({ 
   onAddEtapa, 
@@ -43,17 +44,6 @@ export const CronogramaHeader = ({
     </div>
   </div>
 );
-
-const getProgressStyle = (progress: number) => {
-  if (progress <= 0) return { backgroundColor: '#374151' }; // gray-700 (cinza escuro)
-  if (progress < 50) return { backgroundColor: '#FACC15' }; // yellow-400 (amarelo)
-  if (progress < 75) return { backgroundColor: '#2563EB' }; // blue-600 (azul)
-  if (progress < 100) return { backgroundColor: '#8B5CF6' }; // roxo (75-99%)
-  return { 
-    backgroundColor: '#16A34A', // verde forte (100%)
-    boxShadow: '0 0 6px rgba(34,197,94,0.4)'
-  };
-};
 
 const getStatusInfo = (status: string) => {
   switch (status) {
@@ -121,14 +111,9 @@ export const SummaryPanel = ({ data }: { data: any }) => (
       </div>
       <div className="bg-[#161B22] p-4 rounded-xl border border-white/10 hover:border-white/20 transition-all">
         <p className="text-[10px] text-gray-500 font-bold uppercase mb-1">Progresso</p>
-        <div className="flex items-center gap-2">
-          <div className="text-xl font-black text-white">{data.progress}%</div>
-          <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
-            <div 
-              className="h-full transition-all duration-500" 
-              style={{ width: `${data.progress}%`, ...getProgressStyle(data.progress) }} 
-            />
-          </div>
+        <div className="flex flex-col gap-1">
+          <div className="text-xl font-black text-white">{Math.round(data.progress)}%</div>
+          <ProgressBar progress={data.progress} mode="detailed" />
         </div>
       </div>
     </div>
@@ -276,20 +261,15 @@ export const SubStageRow = ({
         )}
       </div>
 
-      <div className="flex flex-col gap-3 py-1">
-        {/* Bloco 1: Barra + % */}
+      <div className="flex flex-col gap-2 py-1">
         <div className="flex items-center gap-3 w-full">
-          <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
-            <div 
-              className="h-full transition-all duration-500" 
-              style={{ width: `${subStage.progress}%`, ...getProgressStyle(subStage.progress) }} 
-            />
-          </div>
-          <span className="text-[10px] font-black text-white min-w-[30px]">{subStage.progress}%</span>
-        </div>
-        {/* Bloco 2: Botões */}
-        <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-          <QuickProgress current={subStage.progress} onUpdate={onUpdateProgress} size="sm" />
+          <ProgressBar 
+            progress={subStage.progress} 
+            mode="detailed" 
+            className="flex-1" 
+            onUpdate={onUpdateProgress}
+          />
+          <span className="text-[10px] font-black text-white min-w-[30px]">{Math.round(subStage.progress)}%</span>
         </div>
       </div>
 
@@ -444,18 +424,15 @@ export const StageBlock = ({
         <div />
 
         {/* Column 3: Progress */}
-        <div className="flex flex-col gap-3 py-1">
+        <div className="flex flex-col gap-2 py-1">
           <div className="flex items-center gap-3 w-full">
-            <div className="flex-1 h-1.5 bg-black/40 rounded-full overflow-hidden relative">
-              <div 
-                className="h-full transition-all duration-500" 
-                style={{ width: `${stage.progress}%`, ...getProgressStyle(stage.progress) }} 
-              />
-            </div>
-            <span className="text-[10px] font-black text-white min-w-[40px] text-right">{stage.progress}%</span>
-          </div>
-          <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-            <QuickProgress current={stage.progress} onUpdate={(val) => onUpdateSubStageProgress(stage.id, val)} size="sm" />
+            <ProgressBar 
+              progress={stage.progress} 
+              mode="detailed" 
+              className="flex-1" 
+              onUpdate={(val) => onUpdateSubStageProgress(stage.id, val)}
+            />
+            <span className="text-[10px] font-black text-white min-w-[40px] text-right">{Math.round(stage.progress)}%</span>
           </div>
         </div>
 

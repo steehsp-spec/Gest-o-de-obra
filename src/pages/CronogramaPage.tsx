@@ -241,7 +241,7 @@ export default function CronogramaPage() {
     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     
     if (endDateStr < todayStr && overallProgress < 100) {
-      return { status: 'delayed', label: 'Atrasado' };
+      return { status: 'atrasado', label: 'Atrasado' };
     }
     
     return { status: 'ok', label: 'Dentro do prazo' };
@@ -312,7 +312,7 @@ export default function CronogramaPage() {
         { content: step.startDate ? formatDateToBR(step.startDate) : '-', styles: { fillColor: [22, 27, 34], textColor: [255, 255, 255] } },
         { content: step.endDate ? formatDateToBR(step.endDate) : '-', styles: { fillColor: [22, 27, 34], textColor: [255, 255, 255] } },
         { content: `${step.progress}%`, styles: { fontStyle: 'bold', fillColor: [22, 27, 34], textColor: [255, 255, 255] } },
-        { content: step.status, styles: { fillColor: [22, 27, 34], textColor: [255, 255, 255] } }
+        { content: step.status.toUpperCase(), styles: { fillColor: [22, 27, 34], textColor: [255, 255, 255] } }
       ]);
 
       // Add substages
@@ -323,7 +323,7 @@ export default function CronogramaPage() {
             sub.startDate ? formatDateToBR(sub.startDate) : '-',
             sub.endDate ? formatDateToBR(sub.endDate) : '-',
             `${sub.progress}%`,
-            sub.status
+            sub.status.toUpperCase()
           ]);
         });
       }
